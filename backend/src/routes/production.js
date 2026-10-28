@@ -1,7 +1,7 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { canWriteProduction } = require('../roles');
+const { canWriteProduction, isManager } = require('../roles');
 
 // Production reports ("rapports de production"), filled from the phone.
 //
@@ -719,22 +719,48 @@ router.put('/reports/:id/fabrication/:unite/produits', requireWrite, async (req_
 
 // ---- Anomalies (arrêts) -------------------------------------------------------
 
-// POST /reports/:id/anomalies { id_unite, id_anomalie, duree }  (duree: whole minutes > 0)
+// POST /reports/:id/anomalies { id_unite, duree, id_anomalie | nouvelle }
+//   duree: whole minutes > 0.
+//   nouvelle: the name of an anomaly that is not in the list yet. The desktop
+//   creates those in Paramétrage production > Anomalie (insert into
+//   prod_anomalie (anomalie, unite_production)); here managers can do it
+//   while filling the report. An anomaly with the same name for the same
+//   production unit is reused, never duplicated.
 router.post('/reports/:id/anomalies', requireWrite, async (req_, res) => {
   const id = parseId(req_.params.id);
   if (!id) return res.status(400).json({ error: 'Rapport invalide.' });
   await inTx(res, 'anomalie', async (tx) => {
-    const unite = parseId(req_.body?.id_unite); const anomalie = parseId(req_.body?.id_anomalie);
+    const unite = parseId(req_.body?.id_unite);
+    let anomalie = parseId(req_.body?.id_anomalie);
     const duree = Number(req_.body?.duree);
-    if (!unite || !anomalie) throw new ProdError('Choisir une anomalie.');
+    const nouvelle = typeof req_.body?.nouvelle === 'string' ? req_.body.nouvelle.trim().replace(/\s+/g, ' ') : '';
+    if (!unite || (!anomalie && !nouvelle)) throw new ProdError('Choisir une anomalie.');
     if (!Number.isInteger(duree) || duree <= 0) throw new ProdError('La durée doit être un nombre entier de minutes supérieur à 0.');
     await lockReport(tx, id);
+
+    if (nouvelle) {
+      if (!isManager(req_.user?.fonction)) throw new ProdError('Seuls les responsables peuvent créer une nouvelle anomalie.');
+      if (nouvelle.length < 3 || nouvelle.length > 100) throw new ProdError("Le nom de l'anomalie doit avoir entre 3 et 100 caractères.");
+      const u = await run(tx, 'select unite_production from prod_equipement where id_equipement = @u', [['u', sql.Int, unite]]);
+      if (u.length === 0) throw new ProdError('Unité introuvable.');
+      const prodUnit = u[0].unite_production;
+      const same = await run(tx, 'select id from prod_anomalie with (updlock, holdlock) where unite_production = @p and anomalie = @a',
+        [['p', sql.VarChar, prodUnit], ['a', sql.VarChar, nouvelle]]);
+      if (same.length) anomalie = same[0].id;
+      else {
+        const ins = await run(tx, 'insert into prod_anomalie (anomalie, unite_production) values (@a, @p); select cast(scope_identity() as int) as id',
+          [['a', sql.VarChar, nouvelle], ['p', sql.VarChar, prodUnit]]);
+        anomalie = ins[0].id;
+      }
+    }
+
     // the unit must be part of the report, and the anomaly must exist for its production unit
     const ok = await run(tx, `select 1 as ok from prod_equipement e join prod_anomalie n on n.unite_production = e.unite_production
       where e.id_equipement = @u and n.id = @a`, [['u', sql.Int, unite], ['a', sql.Int, anomalie]]);
     if (ok.length === 0) throw new ProdError('Anomalie non valable pour cette unité.');
     await req(tx, [['r', sql.Int, id], ['u', sql.Int, unite], ['a', sql.Int, anomalie], ['d', sql.Int, duree]])
       .query('insert into prod_rapport_anomalie (id_rapport, id_unite, id_anomalie, duree) values (@r, @u, @a, @d)');
+    return { id_anomalie: anomalie };
   });
 });
 

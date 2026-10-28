@@ -666,7 +666,8 @@
       tabButton('accueil', '🏠', 'Accueil'),
       tabButton('stock', '📦', 'Stock'),
       tabButton('magasin', '🏬', 'Magasin'),
-      tabButton('production', '🏭', 'Production')
+      tabButton('production', '📝', 'Production'),
+      tabButton('atelier', '🏭', 'Atelier')
     ];
     if (isAdmin()) {
       tabs.push(tabButton('users', '👤', 'Utilisateurs'));
@@ -709,18 +710,18 @@
   }
 
   // Screens reached from a menu: view -> the bottom-nav entry that owns it.
-  const SUBVIEWS = { bsm: 'magasin', brm: 'magasin', da: 'magasin', reception: 'magasin', atelier: 'production', rapports: 'production' };
+  const SUBVIEWS = { bsm: 'magasin', brm: 'magasin', da: 'magasin', reception: 'magasin', rapports: 'production' };
   const GROUP_LABEL = { magasin: 'Magasin', production: 'Production' };
 
   function renderTab() {
     const group = SUBVIEWS[state.tab] || state.tab;
     document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === group));
-    if (SUBVIEWS[state.tab]) setBack(GROUP_LABEL[group], () => { state.tab = group; state.error = ''; state.notice = ''; renderTab(); });
+    if (state.tab === 'production') state.tab = 'rapports';   // Production opens the reports directly
+    if (SUBVIEWS[state.tab] === 'magasin') setBack(GROUP_LABEL[group], () => { state.tab = group; state.error = ''; state.notice = ''; renderTab(); });
     else setBack(null);
     if (state.tab === 'accueil') return renderAccueil();
     if (state.tab === 'stock') return renderStock();
     if (state.tab === 'magasin') return renderMagasin();
-    if (state.tab === 'production') return renderProductionMenu();
     if (state.tab === 'rapports') return renderRapports();
     if (state.tab === 'bsm') return renderHub('bsm', { new: renderBsm, pending: (r) => renderPending(r, 'bsm'), history: (r) => renderHistorique(r, 'bsm') });
     if (state.tab === 'brm') return renderHub('brm', { new: renderBrm, pending: (r) => renderPending(r, 'brm'), history: (r) => renderHistorique(r, 'brm') });
@@ -1442,16 +1443,6 @@
     });
   }
 
-  function renderProductionMenu() {
-    document.getElementById('main').innerHTML = `<div class="big-menu">
-      ${bigButton('rapports', '📝', 'Rapport de production', 'Remplir les rapports Jour / Soir / Nuit')}
-      ${bigButton('atelier', '🏭', 'Ordres de fabrication', 'Consulter et solder les OF')}
-    </div>`;
-    document.querySelectorAll('.big-btn').forEach((b) => {
-      b.onclick = () => { state.tab = b.dataset.go; state.error = ''; state.notice = ''; renderTab(); };
-    });
-  }
-
   // ---- Production reports (mirrors the desktop "Rapport" screens) --------
   const POSTES = ['Jour', 'Soir', 'Nuit'];
   const PROD_SECTIONS = [
@@ -1488,7 +1479,7 @@
   async function renderRapportList() {
     const P = prodState();
     const main = document.getElementById('main');
-    setBack('Production', () => { state.tab = 'production'; renderTab(); });
+    setBack(null);
     main.innerHTML = '<div class="card"><div class="empty">Chargement…</div></div>';
     let res;
     try { res = await api('/production/reports'); }
@@ -1645,9 +1636,10 @@
     return `<details class="card prod-block anomalies" data-unit="${unit.id_unite}">
       <summary>Arrêts / anomalies${list.length ? ` (${list.length})` : ''}</summary>
       ${list.map((a) => `<div class="line-item"><div class="line-name">${escapeHtml(a.anomalie)}<br><span class="muted">${a.duree} min</span></div>${d.can_write ? `<button type="button" class="ghost" data-adel="${a.id}">✕</button>` : ''}</div>`).join('')}
-      ${d.can_write && opts.length ? `
+      ${d.can_write && (opts.length || isManager()) ? `
         <label>Anomalie</label>
-        <select class="an-sel">${opts.map((o) => `<option value="${o.id}">${escapeHtml(o.anomalie)}</option>`).join('')}</select>
+        <select class="an-sel">${opts.map((o) => `<option value="${o.id}">${escapeHtml(o.anomalie)}</option>`).join('')}${isManager() ? '<option value="new">➕ Autre anomalie…</option>' : ''}</select>
+        <input class="an-new" type="text" maxlength="100" placeholder="Nom de la nouvelle anomalie" style="display:none;margin-top:8px" />
         <label>Durée (minutes)</label>
         <input class="an-dur" type="text" inputmode="numeric" placeholder="ex. 45" />
         <button type="button" class="primary an-add" style="margin-top:12px">Ajouter</button>` : ''}
@@ -1662,14 +1654,19 @@
       const err = el.querySelector('.error');
       const refresh = async (msg) => { await reloadReport(); showToast(msg); await rerenderKeepOpen(); };
       const add = el.querySelector('.an-add');
+      const sel = el.querySelector('.an-sel'); const nw = el.querySelector('.an-new');
+      if (sel) { const sync = () => { nw.style.display = sel.value === 'new' ? 'block' : 'none'; }; sel.onchange = sync; sync(); }
       if (add) add.onclick = async () => {
         err.textContent = '';
         const duree = Number(el.querySelector('.an-dur').value.trim());
+        const isNew = sel.value === 'new';
+        const nom = isNew ? nw.value.trim().replace(/\s+/g, ' ') : '';
+        if (isNew && nom.length < 3) { err.textContent = "Saisissez le nom de l'anomalie (3 caractères minimum)."; return; }
         if (!Number.isInteger(duree) || duree <= 0) { err.textContent = 'Durée : nombre entier de minutes supérieur à 0.'; return; }
         add.disabled = true;
         try {
-          await api(`/production/reports/${P.id}/anomalies`, { method: 'POST', body: { id_unite: unit, id_anomalie: Number(el.querySelector('.an-sel').value), duree } });
-          await refresh('✓ Anomalie ajoutée');
+          await api(`/production/reports/${P.id}/anomalies`, { method: 'POST', body: isNew ? { id_unite: unit, nouvelle: nom, duree } : { id_unite: unit, id_anomalie: Number(sel.value), duree } });
+          await refresh(isNew ? '✓ Nouvelle anomalie créée et ajoutée' : '✓ Anomalie ajoutée');
         } catch (e) { err.textContent = e.message; add.disabled = false; }
       };
       el.querySelectorAll('[data-adel]').forEach((b) => {
@@ -1724,10 +1721,12 @@
     const unitUrl = (part) => `${base}/${sec}/${unit.id_unite}/${part}`;
 
     if (unit && sec === 'fabrication') {
+      const b12 = d.produits.find((p) => String(p.designation).trim().toUpperCase() === 'B12');
       const prodOpts = (sel) => `<option value="0">— choisir —</option>` + d.produits.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${escapeHtml(p.designation)}</option>`).join('');
       blocks += block('Production et tonnage', `
           ${unit.produits.map((p) => pRow(p.designation, pIn(`data-q="${p.id}" data-f="quantite"`, p.quantite, ro))).join('')}
           <label style="margin-top:14px">Produit fabriqué à chaque heure d'échantillonnage</label>
+          ${!ro && b12 ? `<button type="button" class="ghost fill-b12" data-p="${b12.id}" style="margin:2px 0 4px">Remplir H1 à H8 avec ${escapeHtml(b12.designation)}</button>` : ''}
           <div class="hours-grid two">${unit.heures.map((h, k) => `<div><span class="muted">H${k + 1}</span><select data-h="${k}" ${ro ? 'disabled' : ''}>${prodOpts(h)}</select></div>`).join('')}</div>
           <div style="margin-top:12px"><strong>Tonnage : ${fmtQty(unit.tonnage)}</strong> <span class="muted">(calculé à l'enregistrement)</span></div>`,
       'open', !ro, 'Renseignez d\'abord les mesures horaires (poids sec), elles servent au calcul du tonnage.');
@@ -1794,6 +1793,10 @@
 
     main.querySelectorAll('#unit-nav button').forEach((b) => {
       b.onclick = () => { P.unit[sec] = Number(b.dataset.u); renderRapports(); };
+    });
+    // One tap sets the 8 sampling hours to B12 (the usual product).
+    main.querySelectorAll('.fill-b12').forEach((b) => {
+      b.onclick = () => { b.closest('details').querySelectorAll('[data-h]').forEach((sel) => { sel.value = b.dataset.p; }); };
     });
     wireBlocks(main, saves);
     wireAnomalies(main);
