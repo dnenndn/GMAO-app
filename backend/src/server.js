@@ -26,6 +26,8 @@ const daRoutes = require('./routes/da');
 const nfcRoutes = require('./routes/nfc');
 const atelierRoutes = require('./routes/atelier');
 const productionRoutes = require('./routes/production');
+const carburantRoutes = require('./routes/carburant');
+const { startFuelAlerts } = require('./fuelAlerts');
 
 const app = express();
 
@@ -56,6 +58,7 @@ app.use('/api/da', daRoutes);
 app.use('/api/nfc', nfcRoutes);
 app.use('/api/atelier', atelierRoutes);
 app.use('/api/production', productionRoutes);
+app.use('/api/carburant', carburantRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -63,4 +66,7 @@ app.use((err, _req, res, _next) => {
 });
 
 const port = process.env.PORT || 4000;
-app.listen(port, () => console.log(`GMAO stock connector listening on port ${port}`));
+app.listen(port, () => {
+  console.log(`GMAO stock connector listening on port ${port}`);
+  startFuelAlerts();
+});

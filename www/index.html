@@ -506,7 +506,8 @@
     selectedArticle: null,
     bsmLines: [],
     daLines: [],
-    sub: { bsm: 'new', brm: 'new', da: 'new', atelier: 'open' },
+    sub: { bsm: 'new', brm: 'new', da: 'new', atelier: 'open', parc: 'conso' },
+    parc: null,
     prod: null,
     daOptions: null,
     receptionCommande: null,
@@ -667,7 +668,8 @@
       tabButton('stock', '📦', 'Stock'),
       tabButton('magasin', '🏬', 'Magasin'),
       tabButton('production', '📝', 'Production'),
-      tabButton('atelier', '🏭', 'Atelier')
+      tabButton('atelier', '🏭', 'Atelier'),
+      tabButton('parc', '🚜', 'Parc')
     ];
     if (isAdmin()) {
       tabs.push(tabButton('users', '👤', 'Utilisateurs'));
@@ -727,6 +729,7 @@
     if (state.tab === 'brm') return renderHub('brm', { new: renderBrm, pending: (r) => renderPending(r, 'brm'), history: (r) => renderHistorique(r, 'brm') });
     if (state.tab === 'da') return renderHub('da', { new: renderDa, mine: renderDaMine });
     if (state.tab === 'atelier') return renderHub('atelier', { open: (r) => renderAtelierList(r, 'open'), solde: (r) => renderAtelierList(r, 'solde') });
+    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, bons: renderParcBons, alertes: renderParcAlertes });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -738,7 +741,8 @@
     bsm: [['new', 'Nouvelle', false], ['pending', 'À valider', true], ['history', 'Historique', true]],
     brm: [['new', 'Nouveau', false], ['pending', 'À valider', true], ['history', 'Historique', true]],
     da: [['new', 'Nouvelle', false], ['mine', 'Mes demandes', false]],
-    atelier: [['open', 'OF à solder', false], ['solde', 'Soldés', false]]
+    atelier: [['open', 'OF à solder', false], ['solde', 'Soldés', false]],
+    parc: [['conso', 'Consommation', false], ['bons', 'Bons', false], ['alertes', 'Alertes', false]]
   };
 
   function renderHub(tab, renderers) {
@@ -1318,6 +1322,135 @@
     return `<span class="stock-pill ${low ? 'low' : ''}">${escapeHtml(etat || '—')}</span>`;
   }
   const fmtQty = (n) => String(Math.round(Number(n) * 10000) / 10000);
+
+
+  // ---- Parc: diesel per engine (read only) --------------------------------
+  function parcPeriod() {
+    if (!state.parc) {
+      const to = new Date(); const from = new Date(); from.setDate(from.getDate() - 30);
+      state.parc = { from: isoDate(from), to: isoDate(to) };
+    }
+    return state.parc;
+  }
+  const fmtL = (n) => (Math.round(Number(n || 0) * 10) / 10).toLocaleString('fr-FR') + ' L';
+  const fmtMoney = (n) => Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+  const alertLabel = (a) => (a.alertes || []).map((k) =>
+    k === 'quantite' ? `Quantité +${a.ecart_qte} %` : `Consommation/compteur +${a.ecart_taux} %`).join(' · ');
+
+  function parcPeriodCard(onChange) {
+    const P = parcPeriod();
+    return `<div class="card" style="padding:10px"><div style="display:flex;gap:8px">
+      <label style="flex:1" class="muted">Du<input type="date" id="parc-from" value="${P.from}" max="${isoDate()}" /></label>
+      <label style="flex:1" class="muted">Au<input type="date" id="parc-to" value="${P.to}" max="${isoDate()}" /></label>
+    </div></div>`;
+  }
+  function wireParcPeriod(reload) {
+    const P = parcPeriod();
+    const f = document.getElementById('parc-from'); const t = document.getElementById('parc-to');
+    const apply = () => { if (f.value && t.value) { P.from = f.value; P.to = t.value; reload(); } };
+    f.onchange = apply; t.onchange = apply;
+  }
+
+  async function renderParcConso(root) {
+    root.innerHTML = parcPeriodCard() + '<div id="parc-body"><div class="card"><div class="empty">Chargement…</div></div></div>';
+    const load = async () => {
+      const box = document.getElementById('parc-body'); if (!box) return;
+      const P = parcPeriod();
+      try {
+        const d = await api(`/carburant/engins?from=${P.from}&to=${P.to}`);
+        if (d.engins.length === 0) { box.innerHTML = '<div class="card"><div class="empty">Aucune sortie de carburant sur cette période</div></div>'; return; }
+        box.innerHTML = `
+          <div class="card"><strong>${fmtL(d.total_litres)}</strong> · ${fmtMoney(d.total_cout)} TTC
+            <div class="muted">${d.engins.length} engin(s) · du ${frDate(d.from)} au ${frDate(d.to)}</div></div>
+          <div class="card">${d.engins.map((e) => `
+            <div class="article-row" data-e="${e.id_engin}" style="cursor:pointer">
+              <div>
+                <div class="name">${escapeHtml(e.engin)} ${e.matricule ? '· ' + escapeHtml(e.matricule) : ''}</div>
+                <div class="code">${escapeHtml(e.vehicule)} · ${e.nb_sorties} sortie(s) · dernière le ${frDate(e.derniere_date)}${e.dernier_compteur ? ' · compteur ' + fmtQty(e.dernier_compteur) : ''}</div>
+              </div>
+              <div style="text-align:right;white-space:nowrap;flex-shrink:0;padding-left:8px"><strong>${fmtL(e.litres)}</strong>
+                ${e.nb_alertes ? `<div><span class="stock-pill low">⚠ ${e.nb_alertes}</span></div>` : ''}</div>
+            </div>`).join('')}</div>`;
+        box.querySelectorAll('[data-e]').forEach((r) => { r.onclick = () => openEnginSheet(Number(r.dataset.e)); });
+      } catch (e) { box.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; }
+    };
+    wireParcPeriod(load);
+    load();
+  }
+
+  async function openEnginSheet(idEngin) {
+    const P = parcPeriod();
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;display:flex;align-items:flex-end';
+    overlay.innerHTML = '<div id="eng-sheet" style="background:var(--panel);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:16px;padding-bottom:calc(16px + var(--safe-bottom))"><div class="empty">Chargement…</div></div>';
+    document.body.appendChild(overlay);
+    const sheet = overlay.querySelector('#eng-sheet');
+    const close = () => overlay.remove();
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+    try {
+      const d = await api(`/carburant/engins/${idEngin}?from=${P.from}&to=${P.to}`);
+      const litres = d.sorties.reduce((s, x) => s + x.quantite, 0);
+      sheet.innerHTML = `
+        <h2 style="margin-top:0">${escapeHtml(d.engin)} ${d.matricule ? '· ' + escapeHtml(d.matricule) : ''}</h2>
+        <div class="muted" style="margin-bottom:8px">${escapeHtml(d.vehicule)} · ${frDate(d.from)} → ${frDate(d.to)} · ${d.sorties.length} sortie(s) · ${fmtL(litres)}</div>
+        ${d.sorties.map((x) => `
+          <div class="line-item" style="align-items:flex-start">
+            <div class="line-name" style="min-width:0">
+              <strong>${frDate(x.date)} ${escapeHtml(x.heure || '')}</strong> · ${escapeHtml(x.carburant)}<br>
+              <span class="muted">${x.compteur ? 'compteur ' + fmtQty(x.compteur) : 'sans compteur'}${x.taux != null ? ' · ' + x.taux + ' L/unité' : ''} · ${fmtMoney(x.prix_ttc)} TTC</span>
+              ${x.alertes.length ? `<br><span class="stock-pill low" style="white-space:normal;display:inline-block;max-width:100%">⚠ ${escapeHtml(alertLabel(x))}</span>` : ''}
+            </div>
+            <strong style="white-space:nowrap;padding-left:8px">${fmtL(x.quantite)}</strong>
+          </div>`).join('') || '<div class="empty">Aucune sortie</div>'}
+        <button class="ghost" id="eng-close" style="width:100%;margin-top:12px">Fermer</button>`;
+    } catch (e) {
+      sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="eng-close" style="width:100%">Fermer</button>`;
+    }
+    sheet.querySelector('#eng-close').onclick = close;
+  }
+
+  async function renderParcBons(root) {
+    root.innerHTML = parcPeriodCard() + '<div id="parc-body"><div class="card"><div class="empty">Chargement…</div></div></div>';
+    const load = async () => {
+      const box = document.getElementById('parc-body'); if (!box) return;
+      const P = parcPeriod();
+      try {
+        const d = await api(`/carburant/bons?from=${P.from}&to=${P.to}`);
+        if (d.bons.length === 0) { box.innerHTML = '<div class="card"><div class="empty">Aucun bon de carburant sur cette période</div></div>'; return; }
+        box.innerHTML = `
+          <div class="card"><strong>${fmtL(d.total_litres)}</strong> · ${fmtMoney(d.total_cout)} TTC
+            <div class="muted">${d.bons.length} bon(s)</div></div>
+          <div class="card">${d.bons.map((b) => `
+            <div class="article-row">
+              <div>
+                <div class="name">${escapeHtml(b.nom || 'Bon #' + b.id)} · ${frDate(b.date)}</div>
+                <div class="code">${escapeHtml([b.engin, b.matricule, b.chauffeur, b.carburant].filter(Boolean).join(' · '))}</div>
+              </div>
+              <div style="text-align:right;white-space:nowrap;flex-shrink:0;padding-left:8px"><strong>${fmtL(b.quantite)}</strong><div class="muted">${fmtMoney(b.prix_ttc)}</div></div>
+            </div>`).join('')}</div>`;
+      } catch (e) { box.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; }
+    };
+    wireParcPeriod(load);
+    load();
+  }
+
+  async function renderParcAlertes(root) {
+    root.innerHTML = '<div class="card"><div class="muted">Sorties des 30 derniers jours bien au-dessus de l\'habitude de l\'engin (seuil +50 % par rapport à ses 10 sorties précédentes).</div></div><div id="parc-body" class="card"><div class="empty">Chargement…</div></div>';
+    const box = document.getElementById('parc-body');
+    try {
+      const d = await api('/carburant/alertes');
+      if (d.alertes.length === 0) { box.innerHTML = '<div class="empty">Aucune consommation anormale 👍</div>'; return; }
+      box.innerHTML = d.alertes.map((a) => `
+        <div class="article-row" data-e="${a.id_engin}" style="cursor:pointer">
+          <div>
+            <div class="name">${escapeHtml(a.engin)} ${a.matricule ? '· ' + escapeHtml(a.matricule) : ''}</div>
+            <div class="code">${frDate(a.date)} · ${escapeHtml(alertLabel(a))}</div>
+          </div>
+          <strong style="white-space:nowrap;padding-left:8px">${fmtL(a.quantite)}</strong>
+        </div>`).join('');
+      box.querySelectorAll('[data-e]').forEach((r) => { r.onclick = () => openEnginSheet(Number(r.dataset.e)); });
+    } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  }
 
   async function renderAtelierList(root, statut) {
     root.innerHTML = `
