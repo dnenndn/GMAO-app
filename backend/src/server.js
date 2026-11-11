@@ -28,6 +28,7 @@ const atelierRoutes = require('./routes/atelier');
 const productionRoutes = require('./routes/production');
 const carburantRoutes = require('./routes/carburant');
 const { startFuelAlerts } = require('./fuelAlerts');
+const { startServerDiscovery } = require('./serverDiscovery');
 
 const app = express();
 
@@ -69,4 +70,5 @@ const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`GMAO stock connector listening on port ${port}`);
   startFuelAlerts();
+  startServerDiscovery();
 });

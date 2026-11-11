@@ -14,7 +14,7 @@ echo Look for the line  https://something.trycloudflare.com  below.
 echo In the app: login screen, Adresse du serveur, enter that address followed by /api
 echo The address changes every time this window is restarted.
 echo.
-"%CF%" tunnel --url http://localhost:4000
+"%CF%" tunnel --url http://localhost:4000 --metrics 127.0.0.1:20241
 goto :end
 :missing
 echo ERROR: cloudflared was not found. Put cloudflared.exe in C:\cloudflared or add it to PATH.

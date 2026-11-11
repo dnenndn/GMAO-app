@@ -484,6 +484,62 @@
   function getApiBase() {
     return window.localStorage.getItem('gmao_api_base') || 'http://localhost:4000/api';
   }
+  function setApiBase(url) {
+    try { window.localStorage.setItem('gmao_api_base', url); } catch (e) { /* ignore */ }
+  }
+
+  // ---- Automatic server address ---------------------------------------
+  // The tunnel address changes whenever it is restarted. Instead of asking
+  // the user to retype it, the app finds the server by itself, in this order:
+  //   1. the office network address (when the phone is on the local Wi-Fi)
+  //   2. the address it used last time
+  //   3. the address the backend published (backend/src/serverDiscovery.js)
+  const LAN_BASE = 'http://192.168.1.188:4000/api';
+  const DISCOVERY_URL = 'https://gmao-magasin-default-rtdb.firebaseio.com/gmao_server.json';
+  function discoveryUrl() {
+    try { return window.localStorage.getItem('gmao_discovery_url') || DISCOVERY_URL; } catch (e) { return DISCOVERY_URL; }
+  }
+
+  async function probeServer(base, ms) {
+    if (!base) return false;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const res = await fetch(base.replace(/\/+$/, '') + '/health', { signal: ctrl.signal, cache: 'no-store' });
+      const j = await res.json().catch(() => null);
+      return res.ok && !!j && j.status === 'ok';
+    } catch (e) { return false; }
+    finally { clearTimeout(timer); }
+  }
+
+  // Returns a reachable base address, or null when none answers.
+  async function findServer() {
+    if (await probeServer(LAN_BASE, 1500)) return LAN_BASE;
+    const cur = getApiBase();
+    if (cur !== LAN_BASE && await probeServer(cur, 3000)) return cur;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5000);
+      const res = await fetch(discoveryUrl(), { signal: ctrl.signal, cache: 'no-store' }).finally(() => clearTimeout(timer));
+      const d = res.ok ? await res.json() : null;
+      const api = d && typeof d.api === 'string' && /^https:\/\/[a-z0-9.-]+\/api$/i.test(d.api) ? d.api : null;
+      if (api && api !== cur && await probeServer(api, 6000)) return api;
+    } catch (e) { /* offline or not published yet */ }
+    return null;
+  }
+
+  // One search at a time, and not more often than every 15 s when nothing is found.
+  let findInflight = null;
+  let findFailedAt = 0;
+  function rediscoverServer() {
+    if (findInflight) return findInflight;
+    if (Date.now() - findFailedAt < 15000) return Promise.resolve(null);
+    findInflight = findServer().then((base) => {
+      if (base) { findFailedAt = 0; if (base !== getApiBase()) setApiBase(base); } else findFailedAt = Date.now();
+      return base;
+    }).finally(() => { findInflight = null; });
+    return findInflight;
+  }
 
   // Must match backend/src/roles.js exactly - only used here to decide
   // which tabs to show; the backend is the real enforcement point.
@@ -616,14 +672,37 @@
         },
         body: options.body ? JSON.stringify(options.body) : undefined
       });
-      const data = await res.json().catch(() => ({}));
+      let isJson = true;
+      const data = await res.json().catch(() => { isJson = false; return {}; });
+      // A stopped tunnel / proxy answers with an HTML error page, not with our JSON.
+      if (!res.ok && !isJson && [502, 503, 504, 521, 522, 523, 524, 530].includes(res.status)) {
+        const gone = new TypeError('server gone');
+        gone.serverGone = true;
+        throw gone;
+      }
       if (!res.ok) throw new Error(data.error || 'Request failed');
       return data;
     } catch (e) {
       if (e.name === 'AbortError' || ctrl.signal.aborted) {
-        const err = new Error(ctrl.signal.reason === 'cancelled' ? 'cancelled' : 'Réseau trop lent ou serveur injoignable.');
-        err.cancelled = ctrl.signal.reason === 'cancelled';
+        const cancelled = ctrl.signal.reason === 'cancelled';
+        const isGet = !options.method || options.method.toUpperCase() === 'GET';
+        if (!cancelled && !options._retried && isGet) {
+          const before = getApiBase();
+          const found = await rediscoverServer();
+          if (found && found !== before) return networkFetch(path, { ...options, _retried: true });
+        }
+        const err = new Error(cancelled ? 'cancelled' : 'Réseau trop lent ou serveur injoignable.');
+        err.cancelled = cancelled;
         throw err;
+      }
+      // Server not reachable: look for its (possibly new) address and retry once.
+      // A request that never reached our server (connection error, tunnel error
+      // page) is safe to resend. After a timeout only reads are resent (above),
+      // to avoid doing a write twice.
+      if (!options._retried && e instanceof TypeError) {
+        const before = getApiBase();
+        const found = await rediscoverServer();
+        if (found && found !== before) return networkFetch(path, { ...options, _retried: true });
       }
       if (e instanceof TypeError) throw new Error('Serveur injoignable. Vérifiez la connexion et l\'adresse du serveur.');
       throw e;
@@ -2833,6 +2912,10 @@
   loadSession();
   render();
   if (state.token) registerPushNotifications();
+  // Find the server in the background at start, when the network comes back and when the app is reopened.
+  rediscoverServer();
+  window.addEventListener('online', () => { findFailedAt = 0; rediscoverServer(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) rediscoverServer(); });
 
   // Keep the branded loading screen up just long enough to be seen (avoids
   // an ugly flash on fast devices/local networks), then fade it out.
