@@ -535,7 +535,10 @@
     if (findInflight) return findInflight;
     if (Date.now() - findFailedAt < 15000) return Promise.resolve(null);
     findInflight = findServer().then((base) => {
-      if (base) { findFailedAt = 0; if (base !== getApiBase()) setApiBase(base); } else findFailedAt = Date.now();
+      if (base) {
+        findFailedAt = 0;
+        if (base !== getApiBase()) { setApiBase(base); window.dispatchEvent(new Event('gmao-server-changed')); }
+      } else findFailedAt = Date.now();
       return base;
     }).finally(() => { findInflight = null; });
     return findInflight;
@@ -2904,6 +2907,19 @@
   // Find the server in the background at start, when the network comes back and when the app is reopened.
   rediscoverServer();
   window.addEventListener('online', () => { findFailedAt = 0; rediscoverServer(); });
+  // After the app switched to a new server address, reload the screen that is
+  // showing an error so it recovers by itself. Screens without an error are left
+  // alone, so nothing a person is typing (BSM lines, report values...) is lost.
+  let reloadTimer = null;
+  window.addEventListener('gmao-server-changed', () => {
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      if (!state.token || !document.getElementById('main')) return;
+      if (!document.querySelector('#main .error')) { refreshBellBadge(); return; }
+      renderTab();
+      refreshBellBadge();
+    }, 400);
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) rediscoverServer(); });
 
   // Keep the branded loading screen up just long enough to be seen (avoids
