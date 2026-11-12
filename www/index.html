@@ -853,29 +853,18 @@
           <div class="error" id="login-error"></div>
         </div>
         <div class="card">
-          <button class="ghost" id="toggle-server" style="width:100%">⚙ Adresse du serveur</button>
-          <div id="server-box" style="display:none">
-            <label>URL de l'API</label>
-            <input id="server-url" placeholder="http://192.168.1.50:4000/api" value="${escapeHtml(getApiBase())}" />
-            <button class="primary" id="save-server">Enregistrer</button>
-            <div class="success" id="server-saved"></div>
-          </div>
+          <label>Serveur (détecté automatiquement)</label>
+          <input id="server-url" value="${escapeHtml(getApiBase())}" readonly style="opacity:0.75" />
         </div>
       </main>
     `;
     document.getElementById('login-btn').onclick = doLogin;
     document.getElementById('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-    document.getElementById('toggle-server').onclick = () => {
-      const box = document.getElementById('server-box');
-      box.style.display = box.style.display === 'none' ? 'block' : 'none';
-    };
-    document.getElementById('save-server').onclick = () => {
-      const url = document.getElementById('server-url').value.trim().replace(/\/+$/, '');
-      if (url) {
-        localStorage.setItem('gmao_api_base', url);
-        document.getElementById('server-saved').textContent = 'Enregistré.';
-      }
-    };
+    // The address is shown for information only: the app finds the server by itself.
+    rediscoverServer().then(() => {
+      const el = document.getElementById('server-url');
+      if (el) el.value = getApiBase();
+    });
   }
 
   async function doLogin() {
