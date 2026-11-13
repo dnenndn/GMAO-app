@@ -1641,10 +1641,20 @@
 
   // ---- Production reports (mirrors the desktop "Rapport" screens) --------
   const POSTES = ['Jour', 'Soir', 'Nuit'];
+  // Clay heap icon for "Préparation" (clay preparation line of a brick factory).
+  // Inline SVG instead of an emoji: identical on every Android version.
+  const CLAY_ICON = '<svg viewBox="2 12 60 48" width="1.3em" height="1.04em" style="vertical-align:-0.12em" aria-hidden="true">'
+    + '<path d="M4 56h56" stroke="#8a7f74" stroke-width="3" stroke-linecap="round"/>'
+    + '<ellipse cx="20" cy="46" rx="16" ry="10" fill="#b8451f"/>'
+    + '<ellipse cx="44" cy="46" rx="16" ry="10" fill="#a33a19"/>'
+    + '<ellipse cx="32" cy="29" rx="16" ry="11" fill="#d1592f"/>'
+    + '<path d="M22 25c3-5 9-7 14-6" stroke="#f0a583" stroke-width="3" fill="none" stroke-linecap="round"/>'
+    + '<path d="M10 42c2-3 5-4 8-4" stroke="#e08a63" stroke-width="2.5" fill="none" stroke-linecap="round"/>'
+    + '<path d="M38 42c2-3 5-4 8-4" stroke="#c9663f" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>';
   const PROD_SECTIONS = [
     ['fabrication', '🧱', 'Fabrication', 'Produits, tonnage, mesures, chef d\'équipe'],
     ['four', '🔥', 'Four', 'Entrée, sortie, mesures'],
-    ['preparation', '⚗️', 'Préparation', 'Mesures, A/S, général'],
+    ['preparation', CLAY_ICON, 'Préparation', 'Mesures, A/S, général'],
     ['fuel', '⛽', 'Fuel', 'Consommations'],
     ['emballage', '📦', 'Emballage', 'Produits, palettes, chef d\'équipe']
   ];
