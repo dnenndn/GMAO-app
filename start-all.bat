@@ -1,6 +1,5 @@
 @echo off
-rem Starts the backend and the Cloudflare tunnel, each in its own window.
+rem Starts the backend in its own window. The public address (https://gmao.ibb.sarl)
+rem is served by the Cloudflare Tunnel Windows service, which starts with the PC.
 setlocal
 start "GMAO backend" "%~dp0start-backend.bat"
-timeout /t 6 /nobreak >nul
-start "Cloudflare tunnel" "%~dp0start-tunnel.bat"
