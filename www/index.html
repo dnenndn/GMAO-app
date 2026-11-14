@@ -2909,6 +2909,8 @@
   // Find the server in the background at start, when the network comes back and when the app is reopened.
   rediscoverServer();
   window.addEventListener('online', () => { findFailedAt = 0; rediscoverServer(); });
+  // Wi-Fi <-> mobile data change: look for the best address again.
+  try { navigator.connection?.addEventListener('change', () => { findFailedAt = 0; rediscoverServer(); }); } catch (e) { /* not supported */ }
   // After the app switched to a new server address, reload the screen that is
   // showing an error so it recovers by itself. Screens without an error are left
   // alone, so nothing a person is typing (BSM lines, report values...) is lost.
