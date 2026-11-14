@@ -131,9 +131,11 @@
     border-top: 1px solid var(--line);
     padding-bottom: var(--safe-bottom);
     z-index: 10;
+    overflow-x: auto;
   }
   nav.tabs button {
-    flex: 1;
+    flex: 1 0 auto;
+    min-width: 62px;
     background: none;
     border: none;
     color: var(--muted);
@@ -557,7 +559,7 @@
     selectedArticle: null,
     bsmLines: [],
     daLines: [],
-    sub: { bsm: 'new', brm: 'new', da: 'new', atelier: 'open', parc: 'conso' },
+    sub: { bsm: 'new', brm: 'new', da: 'new', atelier: 'open', parc: 'conso', maintenance: 'di', achats: 'cmd', analyse: 'min' },
     parc: null,
     prod: null,
     daOptions: null,
@@ -634,7 +636,8 @@
     [/^\/notifications\/unread-count/, 60000],
     [/^\/(movements\/mine|bsm\/pending|brm\/pending)/, 60000],
     [/^\/articles\?/, 30000],
-    [/^\/atelier\/of\?/, 30000]
+    [/^\/atelier\/of\?/, 30000],
+    [/^\/maintenance\/(options|equipements)/, 600000]
   ];
   function cacheTtl(path) {
     const r = CACHE_RULES.find(([re]) => re.test(path));
@@ -742,6 +745,7 @@
       tabButton('stock', '📦', 'Stock'),
       tabButton('magasin', '🏬', 'Magasin'),
       tabButton('production', '📝', 'Production'),
+      tabButton('maintenance', '🔧', 'Maintenance'),
       tabButton('atelier', '🏭', 'Atelier'),
       tabButton('parc', '🚜', 'Parc')
     ];
@@ -786,12 +790,12 @@
   }
 
   // Screens reached from a menu: view -> the bottom-nav entry that owns it.
-  const SUBVIEWS = { bsm: 'magasin', brm: 'magasin', da: 'magasin', reception: 'magasin', rapports: 'production' };
+  const SUBVIEWS = { bsm: 'magasin', brm: 'magasin', da: 'magasin', reception: 'magasin', rapports: 'production', achats: 'magasin', analyse: 'magasin' };
   const GROUP_LABEL = { magasin: 'Magasin', production: 'Production' };
 
   function renderTab() {
     const group = SUBVIEWS[state.tab] || state.tab;
-    document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === group));
+    document.querySelectorAll('nav.tabs button').forEach((b) => { const on = b.dataset.tab === group; b.classList.toggle('active', on); if (on && b.scrollIntoView) b.scrollIntoView({ inline: 'center', block: 'nearest' }); });
     if (state.tab === 'production') state.tab = 'rapports';   // Production opens the reports directly
     if (SUBVIEWS[state.tab] === 'magasin') setBack(GROUP_LABEL[group], () => { state.tab = group; state.error = ''; state.notice = ''; renderTab(); });
     else setBack(null);
@@ -803,6 +807,9 @@
     if (state.tab === 'brm') return renderHub('brm', { new: renderBrm, pending: (r) => renderPending(r, 'brm'), history: (r) => renderHistorique(r, 'brm') });
     if (state.tab === 'da') return renderHub('da', { new: renderDa, mine: renderDaMine });
     if (state.tab === 'atelier') return renderHub('atelier', { open: (r) => renderAtelierList(r, 'open'), solde: (r) => renderAtelierList(r, 'solde') });
+    if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
+    if (state.tab === 'achats') return renderHub('achats', { cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
+    if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
     if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, bons: renderParcBons, alertes: renderParcAlertes });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
@@ -816,11 +823,14 @@
     brm: [['new', 'Nouveau', false], ['pending', 'À valider', true], ['history', 'Historique', true]],
     da: [['new', 'Nouvelle', false], ['mine', 'Mes demandes', false]],
     atelier: [['open', 'OF à solder', false], ['solde', 'Soldés', false]],
+    maintenance: [['di', 'Demandes', false], ['new', 'Nouvelle DI', false], ['ot', 'OT', false], ['agenda', 'Agenda', false]],
+    achats: [['cmd', 'Commandes', false], ['bl', 'BL', false], ['fac', 'Factures', false]],
+    analyse: [['min', 'Sous minimum', false], ['dormant', 'Dormant', false], ['valeur', 'Valeur', false]],
     parc: [['conso', 'Consommation', false], ['bons', 'Bons', false], ['alertes', 'Alertes', false]]
   };
 
   function renderHub(tab, renderers) {
-    const items = HUBS[tab].filter((i) => !i[2] || isManager());
+    const items = HUBS[tab].filter((i) => (!i[2] || isManager()) && !(tab === 'analyse' && i[0] === 'valeur' && !canSeeMoney()));
     if (!items.some((i) => i[0] === state.sub[tab])) state.sub[tab] = items[0][0];
     const main = document.getElementById('main');
     main.innerHTML = (items.length > 1 ? `
@@ -833,6 +843,375 @@
       b.onclick = () => { state.sub[tab] = b.dataset.v; renderTab(); };
     });
     return renderers[state.sub[tab]](document.getElementById('sub-body'));
+  }
+
+  // ---- Maintenance: DI (create + follow), OT (follow), agenda -----------------
+  const MONEY_ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin', 'Responsable Achat', 'DGA'];
+  const canSeeMoney = () => state.user && MONEY_ROLES.includes(state.user.fonction);
+  const canWriteMaint = () => state.user && state.user.fonction !== 'DGA';
+  const fmtMoney0 = (n) => Number(n || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 });
+  const urgClass = (u) => (u === 'Elevée' ? 'low' : '');
+  const pill = (t, bad) => `<span class="stock-pill ${bad ? 'low' : ''}" style="white-space:nowrap">${escapeHtml(t)}</span>`;
+  const mPeriod = (key, days) => {
+    state.mp = state.mp || {};
+    if (!state.mp[key]) { const to = new Date(); const from = new Date(); from.setDate(from.getDate() - days); state.mp[key] = { from: isoDate(from), to: isoDate(to) }; }
+    return state.mp[key];
+  };
+  function periodCard(key, onChange, maxToday = true) {
+    const P = state.mp[key];
+    return `<div class="card" style="padding:10px"><div style="display:flex;gap:8px">
+      <label style="flex:1" class="muted">Du<input type="date" class="pf" value="${P.from}" ${maxToday ? `max="${isoDate()}"` : ''} /></label>
+      <label style="flex:1" class="muted">Au<input type="date" class="pt" value="${P.to}" /></label>
+    </div></div>`;
+  }
+  function bindPeriod(root, key, reload) {
+    const f = root.querySelector('.pf'), t = root.querySelector('.pt');
+    const upd = () => { if (f.value && t.value && f.value <= t.value) { state.mp[key] = { from: f.value, to: t.value }; reload(); } };
+    f.onchange = upd; t.onchange = upd;
+  }
+  function openSheet(html) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;display:flex;align-items:flex-end';
+    overlay.innerHTML = `<div class="m-sheet" style="background:var(--panel);width:100%;max-height:88vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:16px;padding-bottom:calc(16px + var(--safe-bottom))">${html}</div>`;
+    document.body.appendChild(overlay);
+    const close = () => { overlay.querySelectorAll('img[data-blob]').forEach((i) => URL.revokeObjectURL(i.src)); overlay.remove(); };
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+    return { overlay, sheet: overlay.firstElementChild, close };
+  }
+
+  // DI list ------------------------------------------------------------------
+  const DI_FILTERS = [['attente', 'En attente'], ['validee', 'Validées'], ['cloturee', 'Clôturées'], ['annulee', 'Annulées'], ['all', 'Toutes']];
+  async function renderMaintDi(root) {
+    mPeriod('di', 60);
+    state.diF = state.diF || { statut: 'attente', mine: false, search: '' };
+    root.innerHTML = `
+      ${periodCard('di')}
+      <div class="card" style="padding:10px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">${DI_FILTERS.map(([k, l]) => `<button type="button" class="ghost di-f" data-k="${k}" style="padding:6px 10px;${state.diF.statut === k ? 'background:var(--accent);color:var(--accent-ink)' : ''}">${l}</button>`).join('')}</div>
+        <label class="muted" style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="di-mine" ${state.diF.mine ? 'checked' : ''} style="width:auto"> Mes demandes seulement</label>
+        <input id="di-search" placeholder="N° DI, équipement, description…" value="${escapeHtml(state.diF.search)}" style="margin-top:8px" />
+      </div>
+      <div class="card" id="di-results"><div class="empty">Chargement…</div></div>`;
+    const load = async () => {
+      const box = root.querySelector('#di-results'); if (!box) return;
+      const P = state.mp.di;
+      try {
+        const d = await api(`/maintenance/di?from=${P.from}&to=${P.to}&statut=${state.diF.statut}${state.diF.mine ? '&mine=1' : ''}&search=${encodeURIComponent(state.diF.search)}`, { fresh: true });
+        if (!d.di.length) { box.innerHTML = '<div class="empty">Aucune demande</div>'; return; }
+        box.innerHTML = d.di.map((x) => `
+          <div class="article-row" data-di="${x.id}" style="cursor:pointer;align-items:flex-start">
+            <div style="min-width:0">
+              <div class="name">DI ${escapeHtml(x.n_di)} · ${escapeHtml(x.equipement)}</div>
+              <div class="code">${frDate(x.date)} ${escapeHtml(x.heure || '')} · ${escapeHtml(x.anomalie)}${x.arret_machine ? ' · ⛔ arrêt machine' : ''}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">${pill(x.statut_label, false)}${pill(x.urgence, x.urgence === 'Elevée')}</div>
+          </div>`).join('');
+        box.querySelectorAll('[data-di]').forEach((r) => { r.onclick = () => openDiSheet(Number(r.dataset.di), load); });
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    bindPeriod(root, 'di', load);
+    root.querySelectorAll('.di-f').forEach((b) => { b.onclick = () => { state.diF.statut = b.dataset.k; renderMaintDi(root); }; });
+    root.querySelector('#di-mine').onchange = (e) => { state.diF.mine = e.target.checked; load(); };
+    root.querySelector('#di-search').oninput = debounce((e) => { state.diF.search = e.target.value.trim(); load(); }, 300);
+    load();
+  }
+
+  async function fetchPhotoUrl(pid) {
+    const res = await fetch(getApiBase() + '/maintenance/di-photo/' + pid, { headers: { Authorization: 'Bearer ' + state.token } });
+    if (!res.ok) throw new Error('photo');
+    return URL.createObjectURL(await res.blob());
+  }
+
+  async function openDiSheet(id, onChange) {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    try {
+      const d = await api(`/maintenance/di/${id}`, { fresh: true });
+      sheet.innerHTML = `
+        <h2 style="margin-top:0">DI ${escapeHtml(d.n_di)}</h2>
+        <div style="margin-bottom:8px">${pill(d.statut_label, false)} ${pill(d.urgence, d.urgence === 'Elevée')} ${d.arret_machine ? pill('Arrêt machine', true) : ''}</div>
+        <div class="muted">${frDate(d.date)} ${escapeHtml(d.heure || '')} · demandeur ${escapeHtml(d.demandeur)} · saisi par ${escapeHtml(d.createur || '—')}</div>
+        <p style="margin:8px 0"><strong>${escapeHtml(d.chemin || d.equipement)}</strong></p>
+        <p style="margin:8px 0">${escapeHtml(d.anomalie)}${d.description ? '<br>' + escapeHtml(d.description) : ''}</p>
+        ${d.arret_machine ? `<div class="muted">Arrêt depuis le ${frDate(d.date_arret)} ${escapeHtml(d.heure_arret || '')}</div>` : ''}
+        ${d.ot.length ? `<h3>Ordres de travail liés</h3>${d.ot.map((o) => `<div class="line-item" data-ot="${o.id}" style="cursor:pointer"><div class="line-name">OT ${escapeHtml(o.n_ot)} · ${escapeHtml(o.type)}</div>${pill(o.statut, false)}</div>`).join('')}` : '<div class="muted" style="margin-top:8px">Aucun OT pour le moment.</div>'}
+        <div id="di-photos" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"></div>
+        <div id="di-msg"></div>
+        ${d.can_cancel ? '<button class="ghost" id="di-cancel" style="width:100%;margin-top:12px">Annuler cette demande</button>' : ''}
+        ${d.can_reopen ? '<button class="ghost" id="di-reopen" style="width:100%;margin-top:12px">Réactiver cette demande</button>' : ''}
+        <button class="ghost" id="di-close" style="width:100%;margin-top:8px">Fermer</button>`;
+      sheet.querySelector('#di-close').onclick = close;
+      sheet.querySelectorAll('[data-ot]').forEach((r) => { r.onclick = () => { close(); openOtSheet(Number(r.dataset.ot)); }; });
+      const act = (sel, path, ask) => { const b = sheet.querySelector(sel); if (!b) return; b.onclick = async () => {
+        if (!confirm(ask)) return; b.disabled = true;
+        try { await api(`/maintenance/di/${id}/${path}`, { method: 'PUT' }); showToast('Demande mise à jour'); close(); onChange && onChange(); }
+        catch (e) { b.disabled = false; sheet.querySelector('#di-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; } }; };
+      act('#di-cancel', 'annuler', 'Annuler cette demande ?');
+      act('#di-reopen', 'reactiver', 'Réactiver cette demande ?');
+      d.photos.forEach(async (pid) => {
+        try { const url = await fetchPhotoUrl(pid); const box = sheet.querySelector('#di-photos'); if (box) box.insertAdjacentHTML('beforeend', `<img data-blob src="${url}" style="width:96px;height:96px;object-fit:cover;border-radius:8px" />`); } catch (e) { /* ignore */ }
+      });
+    } catch (e) {
+      sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="di-close" style="width:100%">Fermer</button>`;
+      sheet.querySelector('#di-close').onclick = close;
+    }
+  }
+
+  // Photo: shrink to 1280 px JPEG before upload (saves mobile data, server caps at 1.5 MB).
+  function shrinkPhoto(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image(); const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+        const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+        c.toBlob((b) => (b ? resolve(b) : reject(new Error('Photo illisible'))), 'image/jpeg', 0.7);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Photo illisible')); };
+      img.src = url;
+    });
+  }
+  async function uploadDiPhoto(idDi, blob) {
+    const res = await fetch(getApiBase() + `/maintenance/di/${idDi}/photos`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg', Authorization: 'Bearer ' + state.token }, body: blob });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Envoi de la photo impossible');
+  }
+
+  // DI creation ----------------------------------------------------------------
+  async function renderMaintNew(root) {
+    if (!canWriteMaint()) { root.innerHTML = '<div class="card"><div class="empty">Votre rôle est en lecture seule.</div></div>'; return; }
+    root.innerHTML = '<div class="card"><div class="empty">Chargement…</div></div>';
+    let opt;
+    try { opt = await api('/maintenance/options'); } catch (e) { root.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; return; }
+    const f = state.diForm = state.diForm || { urgence: 'Moyenne', arret: false, photos: [] };
+    const levels = [['atelier', 'Atelier'], ['equipement', 'Équipement'], ['sous_equipement', 'Sous-équipement'], ['organe', 'Organe']];
+    root.innerHTML = `
+      <div class="card">
+        <label>Demandeur</label>
+        <select id="f-dem"><option value="">— choisir —</option>${opt.demandeurs.map((x) => `<option value="${x.id}" ${f.dem == x.id ? 'selected' : ''}>${escapeHtml(x.nom)}</option>`).join('')}</select>
+        ${levels.map(([k, l]) => `<label>${l}</label><select id="f-${k}" data-k="${k}" ${k !== 'atelier' ? 'disabled' : ''}><option value="">—</option></select>`).join('')}
+        <label>Anomalie</label>
+        <select id="f-ano"><option value="">— choisir —</option>${opt.anomalies.map((x) => `<option value="${x.id}" ${f.ano == x.id ? 'selected' : ''}>${escapeHtml(x.code ? x.code + ' · ' : '')}${escapeHtml(x.anomalie)}</option>`).join('')}</select>
+        <label>Urgence</label>
+        <div class="segmented" id="f-urg">${opt.urgences.map((u) => `<button type="button" data-u="${u}" class="${f.urgence === u ? 'selected' : ''}">${u}</button>`).join('')}</div>
+        <label class="muted" style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="f-arret" ${f.arret ? 'checked' : ''} style="width:auto"> ⛔ La machine est à l'arrêt</label>
+        <label>Description (facultatif)</label>
+        <textarea id="f-desc" rows="3" maxlength="500">${escapeHtml(f.desc || '')}</textarea>
+        <label>Photos (${f.photos.length}/5)</label>
+        <div id="f-thumbs" style="display:flex;gap:6px;flex-wrap:wrap">${f.photos.map((p, i) => `<div style="position:relative"><img src="${p.url}" style="width:72px;height:72px;object-fit:cover;border-radius:8px"><button type="button" data-rm="${i}" style="position:absolute;top:-6px;right:-6px;border-radius:50%;width:22px;height:22px;padding:0">×</button></div>`).join('')}</div>
+        ${f.photos.length < 5 ? '<input type="file" id="f-photo" accept="image/*" capture="environment" style="margin-top:6px">' : ''}
+        <button class="primary" id="f-send" style="margin-top:14px">Envoyer la demande</button>
+        <div id="f-msg"></div>
+      </div>`;
+    const sel = (k) => root.querySelector('#f-' + k);
+    const fillLevel = async (i, parent) => {
+      const [k] = levels[i]; const el = sel(k);
+      const rows = await api(`/maintenance/equipements?parent=${parent}`);
+      el.innerHTML = '<option value="">—</option>' + rows.map((r) => `<option value="${r.id}">${escapeHtml(r.designation)}</option>`).join('');
+      el.disabled = rows.length === 0 && i > 0;
+      for (let j = i + 1; j < levels.length; j++) { const e2 = sel(levels[j][0]); e2.innerHTML = '<option value="">—</option>'; e2.disabled = true; }
+    };
+    levels.forEach(([k], i) => { sel(k).onchange = async () => { if (i < levels.length - 1) { const v = sel(k).value; if (v) { try { await fillLevel(i + 1, v); sel(levels[i + 1][0]).disabled = false; } catch (e) { /* shown on send */ } } else for (let j = i + 1; j < levels.length; j++) { sel(levels[j][0]).innerHTML = '<option value="">—</option>'; sel(levels[j][0]).disabled = true; } } }; });
+    (async () => {   // rebuild the equipment branch (also after a photo re-render)
+      try {
+        await fillLevel(0, 0);
+        for (let i = 0; i < levels.length - 1; i++) {
+          const v = f.chain && f.chain[i]; if (!v) break;
+          sel(levels[i][0]).value = v; await fillLevel(i + 1, v); sel(levels[i + 1][0]).disabled = false;
+        }
+        if (f.chain) levels.forEach(([k], i) => { if (f.chain[i]) sel(k).value = f.chain[i]; });
+      } catch (e) { /* shown on send */ }
+    })();
+    root.querySelectorAll('#f-urg button').forEach((b) => { b.onclick = () => { f.urgence = b.dataset.u; root.querySelectorAll('#f-urg button').forEach((x) => x.classList.toggle('selected', x === b)); }; });
+    const keep = () => { f.chain = levels.map(([k]) => sel(k).value); f.dem = sel('dem').value; f.ano = sel('ano').value; f.arret = sel('arret').checked; f.desc = sel('desc').value; };
+    root.querySelectorAll('#f-thumbs [data-rm]').forEach((b) => { b.onclick = () => { keep(); URL.revokeObjectURL(f.photos[b.dataset.rm].url); f.photos.splice(b.dataset.rm, 1); renderMaintNew(root); }; });
+    const ph = root.querySelector('#f-photo');
+    if (ph) ph.onchange = async () => { if (!ph.files[0]) return; keep(); try { const blob = await shrinkPhoto(ph.files[0]); f.photos.push({ blob, url: URL.createObjectURL(blob) }); renderMaintNew(root); } catch (e) { root.querySelector('#f-msg').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; } };
+    root.querySelector('#f-send').onclick = async (ev) => {
+      keep(); const msg = root.querySelector('#f-msg'); msg.innerHTML = '';
+      const btn = ev.currentTarget; btn.disabled = true;
+      try {
+        const out = await api('/maintenance/di', { method: 'POST', body: {
+          id_demandeur: Number(f.dem) || null, id_defaillance: Number(f.ano) || null, urgence: f.urgence, description: f.desc, arret_machine: f.arret,
+          atelier: Number(sel('atelier').value) || null, equipement: Number(sel('equipement').value) || null,
+          sous_equipement: Number(sel('sous_equipement').value) || null, organe: Number(sel('organe').value) || null } });
+        let failed = 0;
+        for (const p of f.photos) { try { await uploadDiPhoto(out.id, p.blob); } catch (e) { failed++; } URL.revokeObjectURL(p.url); }
+        state.diForm = null;
+        showToast(`DI ${out.n_di || ''} créée${failed ? ` (${failed} photo(s) non envoyée(s))` : ''}`);
+        state.sub.maintenance = 'di'; state.diF = { statut: 'attente', mine: true, search: '' }; renderTab();
+      } catch (e) { btn.disabled = false; msg.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+  }
+
+  // OT list / detail -----------------------------------------------------------
+  const OT_FILTERS = [['ouverts', 'Ouverts'], ['clotures', 'Clôturés'], ['all', 'Tous']];
+  async function renderMaintOt(root) {
+    mPeriod('ot', 30);
+    state.otF = state.otF || { statut: 'ouverts', search: '' };
+    root.innerHTML = `
+      ${periodCard('ot')}
+      <div class="card" style="padding:10px">
+        <div class="segmented" style="margin-top:0">${OT_FILTERS.map(([k, l]) => `<button type="button" data-k="${k}" class="${state.otF.statut === k ? 'selected' : ''}">${l}</button>`).join('')}</div>
+        <input id="ot-search" placeholder="N° OT, équipement, commentaire…" value="${escapeHtml(state.otF.search)}" style="margin-top:8px" />
+      </div>
+      <div class="card" id="ot-results"><div class="empty">Chargement…</div></div>`;
+    const load = async () => {
+      const box = root.querySelector('#ot-results'); if (!box) return; const P = state.mp.ot;
+      try {
+        const d = await api(`/maintenance/ot?from=${P.from}&to=${P.to}&statut=${state.otF.statut}&search=${encodeURIComponent(state.otF.search)}`, { fresh: true });
+        if (!d.ot.length) { box.innerHTML = '<div class="empty">Aucun OT</div>'; return; }
+        box.innerHTML = d.ot.map((o) => `
+          <div class="article-row" data-ot="${o.id}" style="cursor:pointer;align-items:flex-start">
+            <div style="min-width:0"><div class="name">OT ${escapeHtml(o.n_ot)} · ${escapeHtml(o.equipement)}</div>
+              <div class="code">${escapeHtml(o.type)}${o.debut_prevu ? ' · prévu ' + frDate(o.debut_prevu) : ''}</div></div>
+            <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">${pill(o.statut, false)}${o.urgence ? pill(o.urgence, o.urgence === 'Elevée') : ''}</div>
+          </div>`).join('');
+        box.querySelectorAll('[data-ot]').forEach((r) => { r.onclick = () => openOtSheet(Number(r.dataset.ot)); });
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    bindPeriod(root, 'ot', load);
+    root.querySelectorAll('.segmented button').forEach((b) => { b.onclick = () => { state.otF.statut = b.dataset.k; renderMaintOt(root); }; });
+    root.querySelector('#ot-search').oninput = debounce((e) => { state.otF.search = e.target.value.trim(); load(); }, 300);
+    load();
+  }
+  async function openOtSheet(id) {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    try {
+      const o = await api(`/maintenance/ot/${id}`, { fresh: true });
+      const money = o.cout_main_oeuvre != null;
+      sheet.innerHTML = `
+        <h2 style="margin-top:0">OT ${escapeHtml(o.n_ot)}</h2>
+        <div style="margin-bottom:8px">${pill(o.statut, false)} ${o.urgence ? pill(o.urgence, o.urgence === 'Elevée') : ''}</div>
+        <div class="muted">${escapeHtml(o.type)}${o.n_di ? ' · issu de la DI ' + escapeHtml(o.n_di) : ''}</div>
+        <p style="margin:8px 0"><strong>${escapeHtml(o.chemin || o.equipement)}</strong></p>
+        <div class="muted">Prévu : ${o.debut_prevu ? frDate(o.debut_prevu) : '—'} → ${o.fin_prevu ? frDate(o.fin_prevu) : '—'}<br>
+          Réel : ${o.date_debut ? frDate(o.date_debut) + ' ' + escapeHtml(o.heure_debut || '') : '—'} → ${o.date_fin ? frDate(o.date_fin) + ' ' + escapeHtml(o.heure_fin || '') : '—'}</div>
+        ${o.commentaire ? `<p style="margin:8px 0">${escapeHtml(o.commentaire)}</p>` : ''}
+        <h3>Intervenants</h3>
+        ${o.intervenants.map((s) => `<div class="line-item"><div class="line-name">${escapeHtml(s.nom || '—')}</div><span>${s.heures} h${money ? ' · ' + fmtMoney0(s.cout) : ''}</span></div>`).join('') || '<div class="muted">Aucun</div>'}
+        <h3>Pièces sorties</h3>
+        ${o.pieces.map((p) => `<div class="line-item"><div class="line-name">${escapeHtml(p.designation)}<br><span class="muted">${escapeHtml(p.code)} · ${frDate(p.date)}</span></div><span>× ${fmtQty(p.quantite)}${money ? ' · ' + fmtMoney0(p.cout) : ''}</span></div>`).join('') || '<div class="muted">Aucune</div>'}
+        ${money ? `<p style="margin-top:10px"><strong>Coût :</strong> main d'œuvre ${fmtMoney0(o.cout_main_oeuvre)} + pièces ${fmtMoney0(o.cout_pieces)} = <strong>${fmtMoney0(o.cout_main_oeuvre + o.cout_pieces)}</strong></p>` : ''}
+        <button class="ghost" id="ot-close" style="width:100%;margin-top:12px">Fermer</button>`;
+    } catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="ot-close" style="width:100%">Fermer</button>`; }
+    sheet.querySelector('#ot-close').onclick = close;
+  }
+
+  // Agenda ---------------------------------------------------------------------
+  async function renderMaintAgenda(root) {
+    state.mp = state.mp || {};
+    if (!state.mp.ag) { const to = new Date(); to.setDate(to.getDate() + 14); state.mp.ag = { from: isoDate(), to: isoDate(to) }; }
+    root.innerHTML = `${periodCard('ag', null, false)}<div class="card" id="ag-results"><div class="empty">Chargement…</div></div>`;
+    const load = async () => {
+      const box = root.querySelector('#ag-results'); if (!box) return; const P = state.mp.ag;
+      try {
+        const d = await api(`/maintenance/agenda?from=${P.from}&to=${P.to}`, { fresh: true });
+        const days = new Map();
+        const add = (day, html) => { if (!days.has(day)) days.set(day, []); days.get(day).push(html); };
+        d.ot_planifies.forEach((o) => add(o.debut_prevu, `<div class="line-item" data-ot="${o.id}" style="cursor:pointer"><div class="line-name">🔧 OT ${escapeHtml(o.n_ot)} · ${escapeHtml(o.equipement)}<br><span class="muted">${escapeHtml(o.type)}</span></div>${pill(o.statut, false)}</div>`));
+        d.preventif.forEach((x) => add(x.date, `<div class="line-item"><div class="line-name">🗓 ${escapeHtml(x.gamme)}<br><span class="muted">${escapeHtml(x.equipement)} · préventif</span></div></div>`));
+        if (!days.size) { box.innerHTML = '<div class="empty">Rien de planifié sur cette période</div>'; return; }
+        box.innerHTML = [...days.keys()].sort().map((k) => `<h3 style="margin:10px 0 4px">${frDate(k)}</h3>${days.get(k).join('')}`).join('');
+        box.querySelectorAll('[data-ot]').forEach((r) => { r.onclick = () => openOtSheet(Number(r.dataset.ot)); });
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    bindPeriod(root, 'ag', load);
+    load();
+  }
+
+  // ---- Achats (money roles): commandes, BL, factures ---------------------------
+  const CMD_FILTERS = [['all', 'Toutes'], ['attente', 'En attente'], ['encours', 'En cours'], ['cloturee', 'Clôturées'], ['annulee', 'Annulées']];
+  async function renderAchatsCmd(root) {
+    mPeriod('cmd', 90); state.cmdF = state.cmdF || { statut: 'all', search: '' };
+    root.innerHTML = `${periodCard('cmd')}<div class="card" style="padding:10px"><div style="display:flex;gap:6px;flex-wrap:wrap">${CMD_FILTERS.map(([k, l]) => `<button type="button" class="ghost cf" data-k="${k}" style="padding:6px 10px;${state.cmdF.statut === k ? 'background:var(--accent);color:var(--accent-ink)' : ''}">${l}</button>`).join('')}</div>
+      <input id="cmd-search" placeholder="Fournisseur ou N° de commande…" value="${escapeHtml(state.cmdF.search)}" style="margin-top:8px" /></div><div class="card" id="cmd-results"><div class="empty">Chargement…</div></div>`;
+    const load = async () => {
+      const box = root.querySelector('#cmd-results'); if (!box) return; const P = state.mp.cmd;
+      try {
+        const d = await api(`/achats/commandes?from=${P.from}&to=${P.to}&statut=${state.cmdF.statut}&search=${encodeURIComponent(state.cmdF.search)}`, { fresh: true });
+        if (!d.commandes.length) { box.innerHTML = '<div class="empty">Aucune commande</div>'; return; }
+        box.innerHTML = d.commandes.map((c) => `<div class="article-row" data-c="${c.id}" style="cursor:pointer;align-items:flex-start"><div style="min-width:0"><div class="name">${escapeHtml(c.fournisseur)}</div><div class="code">N° ${escapeHtml(c.numero)} · ${frDate(c.date)}</div></div><div style="text-align:right">${pill(c.statut_label, false)}<br><strong>${fmtMoney0(c.montant)}</strong></div></div>`).join('');
+        box.querySelectorAll('[data-c]').forEach((r) => { r.onclick = async () => {
+          const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+          try { const l = await api(`/achats/commandes/${r.dataset.c}`, { fresh: true });
+            sheet.innerHTML = `<h2 style="margin-top:0">Commande</h2>${l.lignes.map((x) => `<div class="line-item"><div class="line-name">${escapeHtml(x.designation)}<br><span class="muted">${escapeHtml(x.code)} · ${fmtQty(x.quantite)} × ${fmtMoney(x.prix_ht)}${x.remise ? ' −' + x.remise + '%' : ''}</span></div><strong>${fmtMoney0(x.total)}</strong></div>`).join('') || '<div class="empty">Aucune ligne</div>'}<button class="ghost" id="c-close" style="width:100%;margin-top:12px">Fermer</button>`;
+          } catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="c-close" style="width:100%">Fermer</button>`; }
+          sheet.querySelector('#c-close').onclick = close; }; });
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    bindPeriod(root, 'cmd', load);
+    root.querySelectorAll('.cf').forEach((b) => { b.onclick = () => { state.cmdF.statut = b.dataset.k; renderAchatsCmd(root); }; });
+    root.querySelector('#cmd-search').oninput = debounce((e) => { state.cmdF.search = e.target.value.trim(); load(); }, 300);
+    load();
+  }
+  async function renderAchatsBl(root) {
+    mPeriod('bl', 90); state.blF = state.blF || 'all';
+    root.innerHTML = `${periodCard('bl')}<div class="card" style="padding:10px"><div class="segmented" style="margin-top:0">${[['all', 'Tous'], ['0', 'Non facturés'], ['1', 'Facturés']].map(([k, l]) => `<button type="button" data-k="${k}" class="${state.blF === k ? 'selected' : ''}">${l}</button>`).join('')}</div></div><div class="card" id="bl-results"><div class="empty">Chargement…</div></div>`;
+    const load = async () => {
+      const box = root.querySelector('#bl-results'); if (!box) return; const P = state.mp.bl;
+      try {
+        const d = await api(`/achats/bl?from=${P.from}&to=${P.to}${state.blF === 'all' ? '' : '&facture=' + state.blF}`, { fresh: true });
+        if (!d.bl.length) { box.innerHTML = '<div class="empty">Aucun bon de livraison</div>'; return; }
+        const nf = d.bl.filter((b) => !b.facture).reduce((s, b) => s + b.montant, 0);
+        box.innerHTML = `<div class="muted" style="margin-bottom:6px">Non facturé sur la liste : <strong>${fmtMoney0(nf)}</strong></div>` + d.bl.map((b) => `<div class="article-row" style="align-items:flex-start"><div style="min-width:0"><div class="name">${escapeHtml(b.fournisseur)}</div><div class="code">BL ${escapeHtml(b.numero || '—')} · ${frDate(b.date)}</div></div><div style="text-align:right">${pill(b.facture ? 'Facturé' : 'Non facturé', !b.facture)}<br><strong>${fmtMoney0(b.montant)}</strong></div></div>`).join('');
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    bindPeriod(root, 'bl', load);
+    root.querySelectorAll('.segmented button').forEach((b) => { b.onclick = () => { state.blF = b.dataset.k; renderAchatsBl(root); }; });
+    load();
+  }
+  async function renderAchatsFac(root) {
+    mPeriod('fac', 90);
+    root.innerHTML = `${periodCard('fac')}<div class="card" id="fac-results"><div class="empty">Chargement…</div></div>`;
+    const load = async () => {
+      const box = root.querySelector('#fac-results'); if (!box) return; const P = state.mp.fac;
+      try {
+        const d = await api(`/achats/factures?from=${P.from}&to=${P.to}`, { fresh: true });
+        if (!d.factures.length) { box.innerHTML = '<div class="empty">Aucune facture</div>'; return; }
+        box.innerHTML = `<div class="muted" style="margin-bottom:6px">Total HT : <strong>${fmtMoney0(d.total_ht)}</strong></div>` + d.factures.map((x) => `<div class="article-row"><div style="min-width:0"><div class="name">${escapeHtml(x.fournisseur)}</div><div class="code">Facture ${escapeHtml(x.numero)} · ${frDate(x.date)}</div></div><strong>${fmtMoney0(x.montant_ht)}</strong></div>`).join('');
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    bindPeriod(root, 'fac', load);
+    load();
+  }
+
+  // ---- Analyse stock -----------------------------------------------------------------
+  async function renderStockMin(root) {
+    root.innerHTML = '<div class="card" id="sm"><div class="empty">Chargement…</div></div>';
+    try {
+      const d = await api('/stock-insight/sous-minimum', { fresh: true });
+      root.querySelector('#sm').innerHTML = d.articles.length ? `<div class="muted" style="margin-bottom:6px">${d.articles.length} article(s) au minimum ou en dessous</div>` + d.articles.map((a) => `<div class="article-row"><div style="min-width:0"><div class="name">${escapeHtml(a.designation)}</div><div class="code">${escapeHtml(a.code)} · mini ${fmtQty(a.mini)}</div></div>${pill(a.rupture ? 'Rupture' : fmtQty(a.stock), true)}</div>`).join('') : '<div class="empty">Aucun article sous le minimum 👍</div>';
+    } catch (e) { root.querySelector('#sm').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  }
+  async function renderStockDormant(root) {
+    state.dormJ = state.dormJ || 180;
+    root.innerHTML = `<div class="card" style="padding:10px"><div class="segmented" style="margin-top:0">${[90, 180, 365].map((j) => `<button type="button" data-j="${j}" class="${state.dormJ === j ? 'selected' : ''}">${j} jours</button>`).join('')}</div></div><div class="card" id="sd"><div class="empty">Chargement…</div></div>`;
+    root.querySelectorAll('.segmented button').forEach((b) => { b.onclick = () => { state.dormJ = Number(b.dataset.j); renderStockDormant(root); }; });
+    try {
+      const d = await api(`/stock-insight/dormant?jours=${state.dormJ}`, { fresh: true });
+      root.querySelector('#sd').innerHTML = d.articles.length ? `<div class="muted" style="margin-bottom:6px">Sans sortie depuis ${d.jours} jours${d.total != null ? ' · valeur immobilisée <strong>' + fmtMoney0(d.total) + '</strong>' : ''}</div>` + d.articles.map((a) => `<div class="article-row"><div style="min-width:0"><div class="name">${escapeHtml(a.designation)}</div><div class="code">${escapeHtml(a.code)} · stock ${fmtQty(a.stock)} · ${a.derniere_sortie ? 'dernière sortie ' + frDate(a.derniere_sortie) : 'jamais sorti'}</div></div>${a.valeur != null ? `<strong>${fmtMoney0(a.valeur)}</strong>` : ''}</div>`).join('') : '<div class="empty">Aucun stock dormant</div>';
+    } catch (e) { root.querySelector('#sd').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  }
+  async function renderStockValeur(root) {
+    root.innerHTML = '<div class="card" id="sv"><div class="empty">Chargement…</div></div>';
+    try {
+      const d = await api('/stock-insight/valorisation', { fresh: true });
+      root.querySelector('#sv').innerHTML = `<div style="margin-bottom:8px">Valeur du stock neuf : <strong>${fmtMoney0(d.total)}</strong></div>` + d.familles.map((f) => `<div class="article-row"><div style="min-width:0"><div class="name">${escapeHtml(f.famille)}</div><div class="code">${f.articles} article(s) · ${d.total ? Math.round(f.valeur * 100 / d.total) : 0}%</div></div><strong>${fmtMoney0(f.valeur)}</strong></div>`).join('');
+    } catch (e) { root.querySelector('#sv').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  }
+
+  // ---- Accueil dashboard -------------------------------------------------------------
+  async function loadDashboard() {
+    const box = document.getElementById('dash-box'); if (!box) return;
+    try {
+      const d = await api('/dashboard', { fresh: true });
+      const t = (n, label, tab, sub, bad) => n == null ? '' : `<button type="button" class="quick-tile ${bad && n > 0 ? 'primary' : ''}" data-dash="${tab}|${sub}"><span class="qt-icon" style="font-size:1.6rem">${n}</span><span class="qt-label">${label}</span></button>`;
+      box.innerHTML = `<div class="section-head"><h2>Aujourd'hui</h2></div><div class="quick-actions">
+        ${t(d.di_attente, 'DI en attente', 'maintenance', 'di', true)}${t(d.ot_ouverts, 'OT ouverts', 'maintenance', 'ot')}${t(d.ot_retard, 'OT en retard', 'maintenance', 'ot', true)}
+        ${t(d.sous_minimum, 'Sous le minimum', 'analyse', 'min', true)}${t(d.da_attente, 'DA en attente', 'da', 'mine')}${t(d.bsm_jour, 'Sorties du jour', 'bsm', 'history')}
+        ${d.valeur_stock != null ? `<button type="button" class="quick-tile" data-dash="analyse|valeur"><span class="qt-icon" style="font-size:1.1rem">${fmtMoney0(d.valeur_stock)}</span><span class="qt-label">Valeur du stock</span></button>` : ''}</div>`;
+      box.querySelectorAll('[data-dash]').forEach((b) => { b.onclick = () => { const [tab, sub] = b.dataset.dash.split('|'); state.tab = tab; state.sub[tab] = sub; renderTab(); }; });
+    } catch (e) { box.innerHTML = ''; }
   }
 
   function renderLogin() {
@@ -922,6 +1301,7 @@
         <div class="greeting-role">${escapeHtml(state.user.fonction || '')}</div>
       </div>
       <div id="accueil-pending"></div>
+      <div id="dash-box"></div>
       <div class="section-head"><h2>Actions rapides</h2></div>
       <div class="quick-actions">
         <button type="button" class="quick-tile primary" data-tab="bsm">
@@ -954,6 +1334,7 @@
     document.getElementById('movements-see-all').onclick = (e) => { e.preventDefault(); openMovementsModal(); };
 
     if (isManager()) loadAccueilPending();
+    loadDashboard();
     loadAccueilMovements();
   }
 
@@ -1632,6 +2013,8 @@
     const items = [bigButton('bsm', '📤', 'BSM', 'Bon de sortie magasin')];
     items.push(bigButton('brm', '↩️', 'BRM', 'Bon de retour magasin'));
     if (canCreateDa()) items.push(bigButton('da', '🛒', 'DA', "Demande d'achat"));
+    items.push(bigButton('analyse', '📊', 'Analyse stock', 'Sous minimum, dormant, valeur'));
+    if (canSeeMoney()) items.push(bigButton('achats', '🧾', 'Achats', 'Commandes, BL, factures'));
     if (isManager()) items.push(bigButton('reception', '📥', 'Réception', 'Bons de commande en attente'));
     document.getElementById('main').innerHTML = `<div class="big-menu">${items.join('')}</div>`;
     document.querySelectorAll('.big-btn').forEach((b) => {

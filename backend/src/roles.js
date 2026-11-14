@@ -48,6 +48,18 @@ function canWriteProduction(fonction) {
   return canWriteAtelier(fonction);
 }
 
+// Maintenance people (breakdown requests, work orders). Also the recipients of
+// maintenance alerts. Names are the ones the desktop app tests for.
+const MAINTENANCE_ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Technique', 'Responsable Maintenance'];
+
+// Roles allowed to see amounts (purchasing, stock value). Everyone else only
+// sees quantities.
+const MONEY_ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin', 'Responsable Achat', 'DGA'];
+
+function canSeeMoney(fonction) {
+  return MONEY_ROLES.includes((fonction || '').trim());
+}
+
 function isManager(fonction) {
   return MANAGER_ROLES.includes((fonction || '').trim());
 }
@@ -69,6 +81,6 @@ function requireRole(allowedRoles) {
 }
 
 module.exports = {
-  ADMIN_ROLES, MANAGER_ROLES, DA_REVIEW_ROLES,
+  ADMIN_ROLES, MANAGER_ROLES, DA_REVIEW_ROLES, MAINTENANCE_ROLES, MONEY_ROLES, canSeeMoney,
   isManager, isAdmin, canCreateDa, canCreateDaForOthers, canWriteAtelier, canWriteProduction, requireRole
 };
