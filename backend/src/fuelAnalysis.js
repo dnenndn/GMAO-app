@@ -79,7 +79,13 @@ function analyseAll(rows, opts) {
   const result = new Map();
   for (const [id, list] of byEngin) {
     list.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
-    result.set(id, analyseEngine(list, opts));
+    const own = opts && opts.perEngine && opts.perEngine.get(id);
+    const o = { ...(opts || {}) };
+    if (own) {
+      if (own.actif === false) o.ratio = Infinity;          // alerts switched off for this engine
+      else if (own.ratio) o.ratio = own.ratio;
+    }
+    result.set(id, analyseEngine(list, o));
   }
   return result;
 }

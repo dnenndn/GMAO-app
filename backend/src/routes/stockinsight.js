@@ -3,6 +3,7 @@ const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { canSeeMoney } = require('../roles');
 const { likeEscape } = require('../lib');
+const { suggestQty, openDaArticles } = require('../reorder');
 
 // Stock insight - READ ONLY. Quantities for everyone, values (prix_ht) only
 // for the roles that may see money.
@@ -19,8 +20,10 @@ router.get('/sous-minimum', async (req, res) => {
       from article a
       where a.deleted = @d and a.stock_mini > 0 and a.stock_neuf <= a.stock_mini
       order by (a.stock_neuf - a.stock_mini), a.designation`);
+    const open = await openDaArticles(pool, r.recordset.map((a) => a.id));
     res.json({ articles: r.recordset.map((a) => ({ id: a.id, code: (a.code_article || '').trim(), designation: (a.designation || '').trim(),
-      stock: Number(a.stock_neuf), mini: Number(a.stock_mini), maxi: Number(a.stock_maxi || 0), rupture: Number(a.stock_neuf) <= 0 })) });
+      stock: Number(a.stock_neuf), mini: Number(a.stock_mini), maxi: Number(a.stock_maxi || 0), rupture: Number(a.stock_neuf) <= 0,
+      suggere: suggestQty(a.stock_neuf, a.stock_mini, a.stock_maxi), da_en_cours: open.has(a.id) })) });
   } catch (err) {
     console.error('stock sous-minimum error:', err);
     res.status(500).json({ error: 'Erreur serveur.' });

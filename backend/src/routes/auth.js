@@ -2,6 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { sql, getPool } = require('../db');
+const { loginBlocked, loginFailed, loginOk } = require('../security');
 
 const router = express.Router();
 
@@ -16,8 +17,13 @@ function looksHashed(value) {
 
 router.post('/login', async (req, res) => {
   const { login, password } = req.body || {};
-  if (!login || !password) {
+  if (typeof login !== 'string' || typeof password !== 'string' || !login || !password) {
     return res.status(400).json({ error: 'login and password are required' });
+  }
+  const wait = loginBlocked(req, login);
+  if (wait) {
+    res.set('Retry-After', String(wait));
+    return res.status(429).json({ error: `Trop de tentatives. Réessayez dans ${Math.ceil(wait / 60)} min.` });
   }
 
   try {
@@ -34,6 +40,7 @@ router.post('/login', async (req, res) => {
 
     const user = result.recordset[0];
     if (!user) {
+      loginFailed(req, login);
       return res.status(401).json({ error: 'Invalid login or password' });
     }
 
@@ -43,6 +50,7 @@ router.post('/login', async (req, res) => {
       : password === stored;
 
     if (!valid) {
+      loginFailed(req, login);
       return res.status(401).json({ error: 'Invalid login or password' });
     }
 
@@ -50,6 +58,7 @@ router.post('/login', async (req, res) => {
     // it with trailing spaces (e.g. "Administrateur   ") which would break
     // every exact role check downstream with no visible error. Trim it once
     // here so nothing else has to think about it.
+    loginOk(req, login);
     const fonction = (user.fonction || '').trim();
     const login2 = (user.login || '').trim();
 

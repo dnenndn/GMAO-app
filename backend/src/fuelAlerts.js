@@ -3,6 +3,7 @@ const { getAppPool } = require('./appDb');
 const { notifyRoles } = require('./push');
 const { analyseAll, describe } = require('./fuelAnalysis');
 const { loadSorties } = require('./routes/carburant');
+const { loadFuelSettings } = require('./fuelSettings');
 
 // Polls the desktop table for new fuel issues (the desktop app writes them, so
 // there is nothing to hook into) and sends a push when an engine consumed more
@@ -23,7 +24,7 @@ async function checkFuelAlerts(now = new Date()) {
   const recent = iso(new Date(today.getTime() - LOOKBACK_DAYS * 86400000));
 
   const flagged = [];
-  for (const list of analyseAll(rows).values()) {
+  for (const list of analyseAll(rows, { perEngine: await loadFuelSettings() }).values()) {
     for (const x of list) if (x.alertes.length && iso(new Date(x.date)) >= recent) flagged.push(x);
   }
   if (flagged.length === 0) return 0;

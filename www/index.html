@@ -810,7 +810,7 @@
     if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
     if (state.tab === 'achats') return renderHub('achats', { cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
-    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, bons: renderParcBons, alertes: renderParcAlertes });
+    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -826,7 +826,7 @@
     maintenance: [['di', 'Demandes', false], ['new', 'Nouvelle DI', false], ['ot', 'OT', false], ['agenda', 'Agenda', false]],
     achats: [['cmd', 'Commandes', false], ['bl', 'BL', false], ['fac', 'Factures', false]],
     analyse: [['min', 'Sous minimum', false], ['dormant', 'Dormant', false], ['valeur', 'Valeur', false]],
-    parc: [['conso', 'Consommation', false], ['bons', 'Bons', false], ['alertes', 'Alertes', false]]
+    parc: [['conso', 'Consommation', false], ['bons', 'Bons', false], ['alertes', 'Alertes', false], ['papiers', 'Papiers', false]]
   };
 
   function renderHub(tab, renderers) {
@@ -1178,10 +1178,35 @@
   // ---- Analyse stock -----------------------------------------------------------------
   async function renderStockMin(root) {
     root.innerHTML = '<div class="card" id="sm"><div class="empty">Chargement…</div></div>';
+    const box = root.querySelector('#sm');
     try {
       const d = await api('/stock-insight/sous-minimum', { fresh: true });
-      root.querySelector('#sm').innerHTML = d.articles.length ? `<div class="muted" style="margin-bottom:6px">${d.articles.length} article(s) au minimum ou en dessous</div>` + d.articles.map((a) => `<div class="article-row"><div style="min-width:0"><div class="name">${escapeHtml(a.designation)}</div><div class="code">${escapeHtml(a.code)} · mini ${fmtQty(a.mini)}</div></div>${pill(a.rupture ? 'Rupture' : fmtQty(a.stock), true)}</div>`).join('') : '<div class="empty">Aucun article sous le minimum 👍</div>';
-    } catch (e) { root.querySelector('#sm').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+      if (!d.articles.length) { box.innerHTML = '<div class="empty">Aucun article sous le minimum 👍</div>'; return; }
+      const canDa = canCreateDa();
+      box.innerHTML = `<div class="muted" style="margin-bottom:6px">${d.articles.length} article(s) au minimum ou en dessous${canDa ? ' · cochez pour commander' : ''}</div>` +
+        d.articles.map((a) => `<div class="article-row" style="align-items:center;gap:8px">
+          ${canDa ? `<input type="checkbox" class="sm-ck" data-id="${a.id}" ${a.da_en_cours ? 'disabled' : 'checked'} style="width:auto;flex:none">` : ''}
+          <div style="min-width:0;flex:1"><div class="name">${escapeHtml(a.designation)}</div>
+            <div class="code">${escapeHtml(a.code)} · stock ${fmtQty(a.stock)} / mini ${fmtQty(a.mini)}</div>
+            ${a.da_en_cours ? '<div class="code">🛒 déjà dans une DA en cours</div>' : ''}</div>
+          ${canDa && !a.da_en_cours ? `<input type="number" class="sm-qt" data-id="${a.id}" value="${a.suggere}" min="1" step="any" style="width:70px;flex:none" aria-label="Quantité">` : ''}
+          ${pill(a.rupture ? 'Rupture' : fmtQty(a.stock), true)}</div>`).join('') +
+        (canDa ? '<button class="primary" id="sm-da" style="margin-top:12px">Créer une DA avec les articles cochés</button><div id="sm-msg"></div>' : '');
+      const btn = box.querySelector('#sm-da');
+      if (btn) btn.onclick = async () => {
+        const lines = [...box.querySelectorAll('.sm-ck:checked')].map((c) => ({ id_article: Number(c.dataset.id), qt: Number(box.querySelector(`.sm-qt[data-id="${c.dataset.id}"]`).value) }));
+        const msg = box.querySelector('#sm-msg');
+        if (!lines.length) { msg.innerHTML = '<div class="error">Cochez au moins un article.</div>'; return; }
+        if (lines.some((l) => !(l.qt > 0))) { msg.innerHTML = '<div class="error">Chaque quantité doit être supérieure à 0.</div>'; return; }
+        if (!confirm(`Créer une demande d'achat de ${lines.length} article(s) ?`)) return;
+        btn.disabled = true; msg.innerHTML = '';
+        try {
+          const r = await api('/da/reorder', { method: 'POST', body: { lines } });
+          showToast(`DA #${r.id_da} créée (${r.articles} article(s))${r.ignores.length ? ` · ${r.ignores.length} ignoré(s)` : ''}`);
+          renderStockMin(root);
+        } catch (e) { btn.disabled = false; msg.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+      };
+    } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
   }
   async function renderStockDormant(root) {
     state.dormJ = state.dormJ || 180;
@@ -1822,6 +1847,9 @@
     load();
   }
 
+  const SEUILS = [['def', 'Par défaut (+50 %)'], ['1.2', '+20 % (très sensible)'], ['1.3', '+30 %'], ['1.75', '+75 %'], ['2', '+100 %'], ['off', 'Alertes désactivées']];
+  const seuilValue = (s) => (s.actif === false ? 'off' : s.ratio ? String(s.ratio) : 'def');
+  const canSetSeuil = () => state.user && ['Administrateur', 'Responsable Méthode', 'Responsable Magasin'].includes(state.user.fonction);
   async function openEnginSheet(idEngin) {
     const P = parcPeriod();
     const overlay = document.createElement('div');
@@ -1846,7 +1874,14 @@
             </div>
             <strong style="white-space:nowrap;padding-left:8px">${fmtL(x.quantite)}</strong>
           </div>`).join('') || '<div class="empty">Aucune sortie</div>'}
+        ${canSetSeuil() && d.seuil ? `<label style="margin-top:12px">Seuil d'alerte de cet engin</label>
+          <select id="eng-seuil">${SEUILS.map(([v, l]) => `<option value="${v}" ${seuilValue(d.seuil) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>` : ''}
         <button class="ghost" id="eng-close" style="width:100%;margin-top:12px">Fermer</button>`;
+      const sel = sheet.querySelector('#eng-seuil');
+      if (sel) sel.onchange = async () => {
+        try { await api(`/carburant/seuils/${idEngin}`, { method: 'PUT', body: sel.value === 'off' ? { actif: false } : { ratio: sel.value === 'def' ? null : Number(sel.value) } }); showToast('Seuil enregistré'); }
+        catch (e) { showToast(e.message, true); }
+      };
     } catch (e) {
       sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="eng-close" style="width:100%">Fermer</button>`;
     }
@@ -1878,6 +1913,20 @@
     load();
   }
 
+  async function renderParcPapiers(root) {
+    root.innerHTML = '<div class="card"><div class="muted">Assurance, vignette et visite technique expirées ou qui expirent dans les 30 prochains jours.</div></div><div id="pp-body" class="card"><div class="empty">Chargement…</div></div>';
+    const box = document.getElementById('pp-body');
+    try {
+      const d = await api('/parc/papiers?jours=30', { fresh: true });
+      if (!d.papiers.length) { box.innerHTML = '<div class="empty">Tous les papiers sont à jour 👍</div>'; return; }
+      box.innerHTML = d.papiers.map((x) => `
+        <div class="article-row">
+          <div style="min-width:0"><div class="name">${escapeHtml(x.engin)} ${x.matricule ? '· ' + escapeHtml(x.matricule) : ''}</div>
+          <div class="code">${escapeHtml(x.type)} · ${frDate(x.date_exp)}</div></div>
+          ${pill(x.etat === 'expire' ? `Expiré (${-x.jours} j)` : x.jours === 0 ? "Expire aujourd'hui" : `Dans ${x.jours} j`, x.etat === 'expire')}
+        </div>`).join('');
+    } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  }
   async function renderParcAlertes(root) {
     root.innerHTML = '<div class="card"><div class="muted">Sorties des 30 derniers jours bien au-dessus de l\'habitude de l\'engin (seuil +50 % par rapport à ses 10 sorties précédentes).</div></div><div id="parc-body" class="card"><div class="empty">Chargement…</div></div>';
     const box = document.getElementById('parc-body');
@@ -2672,6 +2721,22 @@
     } catch (e) { /* silent - non-critical */ }
   }
 
+  // Where a notification leads (also used when the user taps the push itself).
+  function goToNotification(type, idRef) {
+    if (!state.token || !type) return;
+    const go = (tab, sub) => { state.tab = tab; if (sub) state.sub[tab] = sub; state.error = ''; state.notice = ''; renderTab(); };
+    if (type === 'di_urgent') { go('maintenance', 'di'); if (Number(idRef)) openDiSheet(Number(idRef), () => renderTab()); }
+    else if (type === 'fuel_alert') go('parc', 'alertes');
+    else if (type === 'paperwork_alert') go('parc', 'papiers');
+    else if (type === 'stock_alert') go('analyse', 'min');
+    else if (type === 'preventive_alert') go('maintenance', 'agenda');
+    else if (type.startsWith('da_')) go('da', 'mine');
+    else if (type === 'bsm_created') go('bsm', 'pending');
+    else if (type.startsWith('bsm_')) go('bsm', 'history');
+    else if (type === 'brm_created') go('brm', 'pending');
+    else if (type.startsWith('brm_')) go('brm', 'history');
+  }
+
   async function openNotifications() {
     let list;
     try {
@@ -2686,7 +2751,7 @@
       <div style="background:var(--panel);width:100%;max-height:75vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:16px;padding-bottom:calc(16px + var(--safe-bottom))">
         <h2 style="margin-top:0">Notifications</h2>
         ${list.length === 0 ? '<div class="empty">Aucune notification</div>' : list.map((n) => `
-          <div class="line-item" style="align-items:flex-start">
+          <div class="line-item" data-nt="${escapeHtml(n.type || '')}" data-nr="${n.id_ref == null ? '' : n.id_ref}" style="align-items:flex-start;cursor:pointer">
             <div class="line-name">
               <strong>${escapeHtml(n.message)}</strong><br>
               <span class="muted">${new Date(n.created_at).toLocaleString('fr-FR')}</span>
@@ -2699,6 +2764,7 @@
     `;
     document.body.appendChild(overlay);
     overlay.querySelector('#close-notifs').onclick = () => overlay.remove();
+    overlay.querySelectorAll('[data-nt]').forEach((r) => { r.onclick = () => { overlay.remove(); goToNotification(r.dataset.nt, r.dataset.nr); }; });
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
     try {
       await api('/notifications/mark-read', { method: 'POST' });
@@ -2741,6 +2807,10 @@
           try { localStorage.setItem('gmao_push_registered', JSON.stringify({ stamp, at: Date.now() })); } catch (e) {}
           console.log('Push token registered with backend successfully.');
         } catch (e) { console.warn('Failed to register push token:', e.message); }
+      });
+      plugin.addListener('pushNotificationActionPerformed', (action) => {
+        const data = (action && action.notification && action.notification.data) || {};
+        goToNotification(String(data.type || ''), data.idRef);
       });
       plugin.addListener('registrationError', (err) => console.warn('Push registration error:', err));
       plugin.addListener('pushNotificationReceived', (notification) => {

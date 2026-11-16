@@ -101,3 +101,22 @@ The three other stock features from your analysis — DA (purchase requests),
 commande creation, and reporting/valorisation — aren't built yet; the route
 structure (`backend/src/routes/`) is set up so each is a same-shaped addition
 when you're ready.
+
+## Run the backend automatically at boot (Windows)
+
+Right-click `install-autostart.bat` > *Run as administrator*. It creates a scheduled task "GMAO Backend"
+that starts the backend when the PC boots (no login needed) and restarts it 5 s after a crash.
+Logs: `backend\logs\backend.log`. Remove it with `uninstall-autostart.bat`. Close `start-backend.bat` first
+(only one copy can use port 4000).
+
+## Security settings (backend/.env, all optional)
+
+- `JWT_SECRET` - use a long random value (24+ characters); a warning is logged otherwise.
+- `LOGIN_MAX_FAILS` (default 5) - wrong passwords per login and client before a 15-minute lock.
+- `RATE_LIMIT_PER_MIN` (default 600) - API requests per minute per client.
+- `CORS_ORIGIN` - comma separated list of allowed web origins. Default: the Android app only
+  (`http://localhost`, `capacitor://localhost`...). Use `*` to allow everything (not recommended).
+
+## Extra app tables (GMAO_APP, run once in SSMS)
+
+`sql/05_di_photos.sql` (DI photos) and `sql/06_engin_seuil.sql` (per-engine fuel alert threshold).

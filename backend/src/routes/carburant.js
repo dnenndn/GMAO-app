@@ -1,7 +1,9 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { analyseAll } = require('../fuelAnalysis');
+const { analyseAll, RATIO } = require('../fuelAnalysis');
+const { loadFuelSettings } = require('../fuelSettings');
+const { getAppPool } = require('../appDb');
 
 // Diesel per engine - READ ONLY. Everything is read from the desktop tables
 // (engins, engin_sortie_carburant, bon_de_carburant ...); nothing is written
@@ -63,7 +65,7 @@ router.get('/engins', async (req, res) => {
   try {
     const pool = await getPool();
     const rows = await loadSorties(pool, addDays(p.to, -HISTORY_DAYS), p.to);
-    const analysed = analyseAll(rows);
+    const analysed = analyseAll(rows, { perEngine: await loadFuelSettings() });
     const fromS = iso(p.from);
     const engins = [];
     for (const [id, list] of analysed) {
@@ -108,7 +110,8 @@ router.get('/engins/:id', async (req, res) => {
   try {
     const pool = await getPool();
     const rows = await loadSorties(pool, addDays(p.to, -HISTORY_DAYS), p.to, id);
-    const list = (analyseAll(rows).get(id) || []);
+    const settings = await loadFuelSettings();
+    const list = (analyseAll(rows, { perEngine: settings }).get(id) || []);
     const fromS = iso(p.from);
     const sorties = list.filter((x) => iso(new Date(x.date)) >= fromS).reverse().map((x) => ({
       id: x.id, date: iso(new Date(x.date)), heure: x.heure, carburant: (x.carburant || '').trim(),
@@ -118,7 +121,8 @@ router.get('/engins/:id', async (req, res) => {
     const head = list[0] || {};
     res.json({
       id_engin: id, matricule: (head.matricule || '').trim(), engin: (head.engin || '').trim(),
-      vehicule: (head.vehicule || '').trim(), from: fromS, to: iso(p.to), sorties
+      vehicule: (head.vehicule || '').trim(), from: fromS, to: iso(p.to), sorties,
+      seuil: { ratio: (settings.get(id) || {}).ratio || null, actif: (settings.get(id) || {}).actif !== false, defaut: RATIO }
     });
   } catch (err) {
     console.error('carburant engin error:', err);
@@ -166,7 +170,7 @@ router.get('/alertes', async (req, res) => {
     const rows = await loadSorties(pool, addDays(today, -HISTORY_DAYS), today);
     const since = iso(addDays(today, -30));
     const alertes = [];
-    for (const list of analyseAll(rows).values()) {
+    for (const list of analyseAll(rows, { perEngine: await loadFuelSettings() }).values()) {
       for (const x of list) {
         if (x.alertes.length && iso(new Date(x.date)) >= since) {
           alertes.push({
@@ -182,6 +186,36 @@ router.get('/alertes', async (req, res) => {
   } catch (err) {
     console.error('carburant alertes error:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// Per-engine alert threshold (managers). ratio: 1.1 - 5 (1.5 = alert at +50 %), or null for the
+// default; actif=false mutes the engine. Stored in GMAO_APP only.
+const SEUIL_ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin'];
+router.put('/seuils/:id', async (req, res) => {
+  if (!SEUIL_ROLES.includes((req.user.fonction || '').trim())) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Engin invalide.' });
+  const b = req.body || {};
+  let ratio = null;
+  if (b.ratio != null && b.ratio !== '') {
+    ratio = Number(b.ratio);
+    if (!Number.isFinite(ratio) || ratio < 1.1 || ratio > 5) return res.status(400).json({ error: 'Seuil invalide (entre 1,1 et 5).' });
+  }
+  const actif = b.actif !== false;
+  try {
+    const pool = await getPool();
+    const e = await pool.request().input('i', sql.Int, id).input('d', sql.Bit, false).query('select 1 as x from engins where id = @i and deleted = @d');
+    if (e.recordset.length === 0) return res.status(404).json({ error: 'Engin introuvable.' });
+    const app = await getAppPool();
+    await app.request().input('i', sql.Int, id).input('r', sql.Float, ratio).input('a', sql.Bit, actif).input('u', sql.Int, req.user.id).query(`
+      merge app_engin_seuil as t using (select @i as id_engin) as s on t.id_engin = s.id_engin
+      when matched then update set ratio = @r, actif = @a, updated_by = @u, updated_at = getdate()
+      when not matched then insert (id_engin, ratio, actif, updated_by) values (@i, @r, @a, @u);`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('carburant seuil error:', err);
+    res.status(500).json({ error: 'Erreur serveur (la table des seuils est-elle créée ? voir sql/06_engin_seuil.sql).' });
   }
 });
 

@@ -1,1 +1,5 @@
 backend/firebase-service-account.json
+backend/.env
+backend/logs/
+node_modules/
+node-path.txt

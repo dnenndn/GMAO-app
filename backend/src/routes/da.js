@@ -4,6 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { DA_REVIEW_ROLES, canCreateDa, canCreateDaForOthers } = require('../roles');
 const { notifyUsers } = require('../push');
 const { loginsByIds } = require('../userLookup');
+const { suggestQty, openDaArticles } = require('../reorder');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -106,14 +107,16 @@ router.get('/articles/:id/equipements', async (req, res) => {
 //   id_demandeur,                       // optional, only honoured for the roles that may
 //   lines: [{ id_article, qt, motif, id_equipements: [..] }]
 // }
-router.post('/', async (req, res) => {
-  const fonction = req.user.fonction;
+async function createDa(user, payload) {
+  const fonction = user.fonction;
   if (!canCreateDa(fonction)) {
-    return res.status(403).json({ error: "Votre rôle ne peut pas créer de demande d'achat." });
+    const e = new DaError("Votre rôle ne peut pas créer de demande d'achat.");
+    e.status = 403;
+    throw e;
   }
 
-  try {
-    const { delai, periode, id_demandeur, lines } = req.body || {};
+  {
+    const { delai, periode, id_demandeur, lines } = payload || {};
 
     const delaiNum = Number(delai);
     if (delai === '' || delai == null || !Number.isFinite(delaiNum) || delaiNum <= 0) {
@@ -147,8 +150,8 @@ router.post('/', async (req, res) => {
 
     // Demandeur: the user themself, unless their role may create on behalf of
     // someone else (then it must be an existing, active user).
-    let demandeurId = req.user.id;
-    if (canCreateDaForOthers(fonction) && id_demandeur != null && Number(id_demandeur) !== req.user.id) {
+    let demandeurId = user.id;
+    if (canCreateDaForOthers(fonction) && id_demandeur != null && Number(id_demandeur) !== user.id) {
       const found = await pool
         .request()
         .input('i', sql.Int, Number(id_demandeur))
@@ -191,7 +194,7 @@ router.post('/', async (req, res) => {
         .input('heure_da', sql.NVarChar, now.toTimeString().slice(0, 5))
         .input('delai', sql.Real, delaiNum)
         .input('periode', sql.NVarChar, periode)
-        .input('createur', sql.Int, req.user.id)
+        .input('createur', sql.Int, user.id)
         .input('demandeur', sql.Int, demandeurId)
         .query(
           `insert into demande_achat (date_da, heure_da, delai, periode, createur, demandeur, statut, vue)
@@ -237,15 +240,68 @@ router.post('/', async (req, res) => {
       throw err;
     }
 
-    notifyReviewers(pool, idDa, req.user, demandeurId).catch((err) => console.error('notify DA reviewers failed:', err));
+    notifyReviewers(pool, idDa, user, demandeurId).catch((err) => console.error('notify DA reviewers failed:', err));
 
-    res.status(201).json({ id_da: idDa });
+    return idDa;
+  }
+}
+
+function sendDaError(res, err, what) {
+  if (err instanceof DaError) return res.status(err.status || 400).json({ error: err.message });
+  console.error(what, err);
+  return res.status(500).json({ error: "Erreur serveur pendant la création de la demande d'achat." });
+}
+
+router.post('/', async (req, res) => {
+  try {
+    res.status(201).json({ id_da: await createDa(req.user, req.body) });
   } catch (err) {
-    if (err instanceof DaError) return res.status(400).json({ error: err.message });
-    console.error('da create error:', err);
-    res.status(500).json({ error: "Erreur serveur pendant la création de la demande d'achat." });
+    sendDaError(res, err, 'da create error:');
   }
 });
+
+// One-tap replenishment: a DA for articles that are under their minimum.
+// Body: { delai?, periode?, lines: [{ id_article, qt? }] }. The quantity
+// defaults to the suggestion (back up to the maximum, or twice the minimum
+// when no maximum is set). Equipment links are all attached (the desktop
+// requires at least one), the motif says where the DA comes from.
+router.post('/reorder', async (req, res) => {
+  try {
+    if (!canCreateDa(req.user.fonction)) {
+      const e = new DaError("Votre rôle ne peut pas créer de demande d'achat.");
+      e.status = 403;
+      throw e;
+    }
+    const { delai, periode, lines } = req.body || {};
+    if (!Array.isArray(lines) || lines.length === 0) throw new DaError('Choisissez au moins un article.');
+    if (lines.length > MAX_LINES) throw new DaError(`Maximum ${MAX_LINES} articles par demande.`);
+    const ids = [...new Set(lines.map((l) => Number(l && l.id_article)))];
+    if (ids.some((i) => !Number.isInteger(i) || i <= 0)) throw new DaError('Article invalide.');
+    const pool = await getPool();
+    const rq = pool.request().input('d', sql.Bit, false);
+    const ph = inList(rq, 'a', ids);
+    const r = await rq.query(`select id, designation, stock_neuf, stock_mini, stock_maxi from article where deleted = @d and id in (${ph})`);
+    const byId = new Map(r.recordset.map((a) => [a.id, a]));
+    const open = await openDaArticles(pool, ids);
+    const out = [];
+    const skipped = [];
+    for (const l of lines) {
+      const a = byId.get(Number(l.id_article));
+      if (!a) throw new DaError(`Article ${l.id_article} introuvable.`);
+      const name = (a.designation || '').trim();
+      if (!(Number(a.stock_mini) > 0 && Number(a.stock_neuf) <= Number(a.stock_mini))) { skipped.push({ id: a.id, designation: name, raison: 'plus sous le minimum' }); continue; }
+      if (open.has(a.id)) { skipped.push({ id: a.id, designation: name, raison: 'déjà dans une DA en cours' }); continue; }
+      const qt = l.qt == null || l.qt === '' ? suggestQty(a.stock_neuf, a.stock_mini, a.stock_maxi) : Number(l.qt);
+      out.push({ id_article: a.id, qt, motif: 'Réapprovisionnement - stock sous le minimum', id_equipements: (await equipementsFor(pool, a.id)).map((e) => e.id) });
+    }
+    if (out.length === 0) throw new DaError('Aucun article à commander (déjà couverts ou plus sous le minimum).');
+    const idDa = await createDa(req.user, { delai: delai ?? 1, periode: periode || 'Semaine', lines: out });
+    res.status(201).json({ id_da: idDa, articles: out.length, ignores: skipped });
+  } catch (err) {
+    sendDaError(res, err, 'da reorder error:');
+  }
+});
+
 
 // Tell the people who review new DAs on the desktop that one is waiting
 // (the creator themself is left out).

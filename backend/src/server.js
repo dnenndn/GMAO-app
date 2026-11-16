@@ -33,6 +33,8 @@ const stockInsightRoutes = require('./routes/stockinsight');
 const dashboardRoutes = require('./routes/dashboard');
 const { startFuelAlerts } = require('./fuelAlerts');
 const { startDailyAlerts } = require('./alerts');
+const parcRoutes = require('./routes/parc');
+const { apiLimiter, securityHeaders, corsOptions, checkSecrets } = require('./security');
 
 const app = express();
 
@@ -45,7 +47,11 @@ try {
   console.warn('compression package not installed - run "npm install" in backend/ to save mobile data.');
 }
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+app.disable('x-powered-by');
+checkSecrets();
+app.use(securityHeaders);
+app.use(cors(corsOptions()));
+app.use('/api', apiLimiter());
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
@@ -64,6 +70,7 @@ app.use('/api/nfc', nfcRoutes);
 app.use('/api/atelier', atelierRoutes);
 app.use('/api/production', productionRoutes);
 app.use('/api/carburant', carburantRoutes);
+app.use('/api/parc', parcRoutes);
 app.use('/api/maintenance', maintenanceRoutes);
 app.use('/api/achats', achatsRoutes);
 app.use('/api/stock-insight', stockInsightRoutes);
