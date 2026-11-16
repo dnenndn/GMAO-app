@@ -88,10 +88,12 @@ router.get('/engins', async (req, res) => {
         taux_moyen: rates.length ? Math.round((rates.reduce((a, b) => a + b, 0) / rates.length) * 10000) / 10000 : null,
         dernier_compteur: withCounter.length ? Number(withCounter[withCounter.length - 1].compteur) : null,
         derniere_date: iso(new Date(last.date)),
-        nb_alertes: inPeriod.filter((x) => x.alertes.length).length
+        nb_alertes: inPeriod.filter((x) => x.alertes.length).length,
+        nb_sans_compteur: inPeriod.filter((x) => x.sans_compteur).length
       });
     }
     engins.sort((a, b) => b.litres - a.litres);
+    engins.forEach((x, i) => { x.rang = i + 1; });
     res.json({
       from: fromS, to: iso(p.to), engins,
       total_litres: Math.round(engins.reduce((s, x) => s + x.litres, 0) * 100) / 100,
@@ -117,7 +119,7 @@ router.get('/engins/:id', async (req, res) => {
     const sorties = list.filter((x) => iso(new Date(x.date)) >= fromS).reverse().map((x) => ({
       id: x.id, date: iso(new Date(x.date)), heure: x.heure, carburant: (x.carburant || '').trim(),
       quantite: Number(x.quantite), prix_ttc: Number(x.prix_ttc), compteur: x.compteur == null ? null : Number(x.compteur),
-      taux: x.taux, alertes: x.alertes, ecart_qte: x.ecart_qte, ecart_taux: x.ecart_taux
+      taux: x.taux, alertes: x.alertes, sans_compteur: x.sans_compteur, ecart_qte: x.ecart_qte, ecart_taux: x.ecart_taux
     }));
     const head = list[0] || {};
     res.json({
@@ -173,11 +175,11 @@ router.get('/alertes', async (req, res) => {
     const alertes = [];
     for (const list of analyseAll(rows, { perEngine: await loadFuelSettings() }).values()) {
       for (const x of list) {
-        if (x.alertes.length && iso(new Date(x.date)) >= since) {
+        if ((x.alertes.length || x.sans_compteur) && iso(new Date(x.date)) >= since) {
           alertes.push({
             id: x.id, id_engin: x.id_engin, matricule: (x.matricule || '').trim(), engin: (x.engin || '').trim(),
             date: iso(new Date(x.date)), quantite: Number(x.quantite), taux: x.taux,
-            alertes: x.alertes, ecart_qte: x.ecart_qte, ecart_taux: x.ecart_taux
+            alertes: x.sans_compteur ? [...x.alertes, 'compteur'] : x.alertes, ecart_qte: x.ecart_qte, ecart_taux: x.ecart_taux
           });
         }
       }

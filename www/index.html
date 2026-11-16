@@ -1303,7 +1303,7 @@
         d.articles.map((a) => `<div class="article-row" style="align-items:center;gap:8px">
           ${canDa ? `<input type="checkbox" class="sm-ck" data-id="${a.id}" ${a.da_en_cours ? 'disabled' : 'checked'} style="width:auto;flex:none">` : ''}
           <div style="min-width:0;flex:1"><div class="name">${escapeHtml(a.designation)}</div>
-            <div class="code">${escapeHtml(a.code)} · stock ${fmtQty(a.stock)} / mini ${fmtQty(a.mini)}</div>
+            <div class="code">${escapeHtml(a.code)} · stock ${fmtQty(a.stock)} / mini ${fmtQty(a.mini)}${a.couverture_jours != null ? ` · <strong style="color:${a.couverture_jours <= 7 ? 'var(--danger, #b3261e)' : 'inherit'}">≈ ${a.couverture_jours} j de stock</strong>` : ''}</div>
             ${a.da_en_cours ? '<div class="code">🛒 déjà dans une DA en cours</div>' : ''}</div>
           ${canDa && !a.da_en_cours ? `<input type="number" class="sm-qt" data-id="${a.id}" value="${a.suggere}" min="1" step="any" style="width:70px;flex:none" aria-label="Quantité">` : ''}
           ${pill(a.rupture ? 'Rupture' : fmtQty(a.stock), true)}</div>`).join('') +
@@ -2051,20 +2051,27 @@
   const fmtL = (n) => (Math.round(Number(n || 0) * 10) / 10).toLocaleString('fr-FR') + ' L';
   const fmtMoney = (n) => Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
   const alertLabel = (a) => (a.alertes || []).map((k) =>
-    k === 'quantite' ? `Quantité +${a.ecart_qte} %` : `Consommation/compteur +${a.ecart_taux} %`).join(' · ');
+    k === 'quantite' ? `Quantité +${a.ecart_qte} %` : k === 'compteur' ? 'Compteur non saisi' : `Consommation/compteur +${a.ecart_taux} %`).join(' · ');
 
   function parcPeriodCard(onChange) {
     const P = parcPeriod();
     return `<div class="card" style="padding:10px"><div style="display:flex;gap:8px">
       <label style="flex:1" class="muted">Du<input type="date" id="parc-from" value="${P.from}" max="${isoDate()}" /></label>
       <label style="flex:1" class="muted">Au<input type="date" id="parc-to" value="${P.to}" max="${isoDate()}" /></label>
-    </div></div>`;
+    </div><div style="display:flex;gap:6px;margin-top:8px"><button type="button" class="ghost parc-pre" data-p="m0" style="flex:1;padding:6px">Ce mois</button><button type="button" class="ghost parc-pre" data-p="m1" style="flex:1;padding:6px">Mois dernier</button><button type="button" class="ghost parc-pre" data-p="d30" style="flex:1;padding:6px">30 jours</button></div></div>`;
   }
   function wireParcPeriod(reload) {
     const P = parcPeriod();
     const f = document.getElementById('parc-from'); const t = document.getElementById('parc-to');
     const apply = () => { if (f.value && t.value) { P.from = f.value; P.to = t.value; reload(); } };
     f.onchange = apply; t.onchange = apply;
+    document.querySelectorAll('.parc-pre').forEach((b) => { b.onclick = () => {
+      const now = new Date(); let from, to = new Date(now);
+      if (b.dataset.p === 'm0') from = new Date(now.getFullYear(), now.getMonth(), 1);
+      else if (b.dataset.p === 'm1') { from = new Date(now.getFullYear(), now.getMonth() - 1, 1); to = new Date(now.getFullYear(), now.getMonth(), 0); }
+      else { from = new Date(now); from.setDate(from.getDate() - 30); }
+      P.from = isoDate(from); P.to = isoDate(to); f.value = P.from; t.value = P.to; reload();
+    }; });
   }
 
   async function renderParcConso(root) {
@@ -2080,12 +2087,15 @@
             <div class="muted">${d.engins.length} engin(s) · du ${frDate(d.from)} au ${frDate(d.to)}</div></div>
           <div class="card">${d.engins.map((e) => `
             <div class="article-row" data-e="${e.id_engin}" style="cursor:pointer">
-              <div>
-                <div class="name">${escapeHtml(e.engin)} ${e.matricule ? '· ' + escapeHtml(e.matricule) : ''}</div>
+              <div style="min-width:0;flex:1">
+                <div class="name">${e.rang}. ${escapeHtml(e.engin)} ${e.matricule ? '· ' + escapeHtml(e.matricule) : ''}</div>
+                <div style="height:5px;background:var(--line);border-radius:3px;margin:3px 0"><div style="height:5px;width:${d.total_litres > 0 ? Math.max(2, Math.round(e.litres / d.engins[0].litres * 100)) : 0}%;background:var(--accent);border-radius:3px"></div></div>
                 <div class="code">${escapeHtml(e.vehicule)} · ${e.nb_sorties} sortie(s) · dernière le ${frDate(e.derniere_date)}${e.dernier_compteur ? ' · compteur ' + fmtQty(e.dernier_compteur) : ''}</div>
               </div>
               <div style="text-align:right;white-space:nowrap;flex-shrink:0;padding-left:8px"><strong>${fmtL(e.litres)}</strong>
-                ${e.nb_alertes ? `<div><span class="stock-pill low">⚠ ${e.nb_alertes}</span></div>` : ''}</div>
+                <div class="muted">${d.total_litres > 0 ? (e.litres / d.total_litres * 100).toFixed(1).replace('.', ',') + ' %' : ''}</div>
+                ${e.nb_alertes ? `<div><span class="stock-pill low">⚠ ${e.nb_alertes}</span></div>` : ''}
+                ${e.nb_sans_compteur ? `<div><span class="stock-pill low" title="Sorties sans compteur">🔢 ${e.nb_sans_compteur}</span></div>` : ''}</div>
             </div>`).join('')}</div>`;
         box.querySelectorAll('[data-e]').forEach((r) => { r.onclick = () => openEnginSheet(Number(r.dataset.e)); });
       } catch (e) { box.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; }
@@ -2117,7 +2127,7 @@
             <div class="line-name" style="min-width:0">
               <strong>${frDate(x.date)} ${escapeHtml(x.heure || '')}</strong> · ${escapeHtml(x.carburant)}<br>
               <span class="muted">${x.compteur ? 'compteur ' + fmtQty(x.compteur) : 'sans compteur'}${x.taux != null ? ' · ' + x.taux + ' L/unité' : ''} · ${fmtMoney(x.prix_ttc)} TTC</span>
-              ${x.alertes.length ? `<br><span class="stock-pill low" style="white-space:normal;display:inline-block;max-width:100%">⚠ ${escapeHtml(alertLabel(x))}</span>` : ''}
+              ${x.alertes.length || x.sans_compteur ? `<br><span class="stock-pill low" style="white-space:normal;display:inline-block;max-width:100%">⚠ ${escapeHtml(alertLabel({ ...x, alertes: x.sans_compteur ? [...x.alertes, 'compteur'] : x.alertes }))}</span>` : ''}
             </div>
             <strong style="white-space:nowrap;padding-left:8px">${fmtL(x.quantite)}</strong>
           </div>`).join('') || '<div class="empty">Aucune sortie</div>'}
@@ -2175,7 +2185,7 @@
     } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
   }
   async function renderParcAlertes(root) {
-    root.innerHTML = '<div class="card"><div class="muted">Sorties des 30 derniers jours bien au-dessus de l\'habitude de l\'engin (seuil +50 % par rapport à ses 10 sorties précédentes).</div></div><div id="parc-body" class="card"><div class="empty">Chargement…</div></div>';
+    root.innerHTML = '<div class="card"><div class="muted">Sorties des 30 derniers jours bien au-dessus de l\'habitude de l\'engin (seuil +50 % par rapport à ses 10 sorties précédentes) ou servies sans relevé de compteur.</div></div><div id="parc-body" class="card"><div class="empty">Chargement…</div></div>';
     const box = document.getElementById('parc-body');
     try {
       const d = await api('/carburant/alertes');
@@ -2974,7 +2984,7 @@
     if (!state.token || !type) return;
     const go = (tab, sub) => { state.tab = tab; if (sub) state.sub[tab] = sub; state.error = ''; state.notice = ''; renderTab(); };
     if (type === 'di_urgent') { go('maintenance', 'di'); if (Number(idRef)) openDiSheet(Number(idRef), () => renderTab()); }
-    else if (type === 'fuel_alert') go('parc', 'alertes');
+    else if (type === 'fuel_alert' || type === 'fuel_no_counter') go('parc', 'alertes');
     else if (type === 'paperwork_alert') go('parc', 'papiers');
     else if (type === 'stock_alert') go('analyse', 'min');
     else if (type === 'preventive_alert') go('maintenance', 'agenda');

@@ -37,7 +37,9 @@ function analyseEngine(rows, opts = {}) {
   for (const r of rows) {
     const q = num(r.quantite);
     const c = num(r.compteur);
-    const item = { ...r, taux: null, ecart_qte: null, ecart_taux: null, alertes: [] };
+    const item = { ...r, taux: null, ecart_qte: null, ecart_taux: null, alertes: [], sans_compteur: false };
+    // litres issued but no counter reading, on an engine whose earlier issues did have one
+    if (Number.isFinite(q) && q > 0 && !(Number.isFinite(c) && c > 0) && prevCounter != null) item.sans_compteur = true;
 
     // litres per counter unit since the previous issue (needs a sane counter)
     if (Number.isFinite(q) && q > 0 && Number.isFinite(c) && c > 0 && prevCounter != null && c > prevCounter) {
@@ -82,10 +84,12 @@ function analyseAll(rows, opts) {
     const own = opts && opts.perEngine && opts.perEngine.get(id);
     const o = { ...(opts || {}) };
     if (own) {
-      if (own.actif === false) o.ratio = Infinity;          // alerts switched off for this engine
+      if (own.actif === false) { o.ratio = Infinity; o.muet = true; }   // alerts switched off for this engine
       else if (own.ratio) o.ratio = own.ratio;
     }
-    result.set(id, analyseEngine(list, o));
+    const out = analyseEngine(list, o);
+    if (o.muet) out.forEach((x) => { x.sans_compteur = false; });
+    result.set(id, out);
   }
   return result;
 }

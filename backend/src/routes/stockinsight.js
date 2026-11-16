@@ -21,7 +21,17 @@ router.get('/sous-minimum', async (req, res) => {
       where a.deleted = @d and a.stock_mini > 0 and a.stock_neuf <= a.stock_mini
       order by (a.stock_neuf - a.stock_mini), a.designation`);
     const open = await openDaArticles(pool, r.recordset.map((a) => a.id));
-    res.json({ articles: r.recordset.map((a) => ({ id: a.id, code: (a.code_article || '').trim(), designation: (a.designation || '').trim(),
+    // average daily issues (BSM) over the last 90 days -> days of stock left
+    const WIN = 90; const avg = new Map();
+    if (r.recordset.length) {
+      const c = await pool.request().input('days', sql.Int, WIN).query(`
+        select ba.id_article, sum(ba.quantite) as qt from bsm_article ba inner join bsm b on ba.id_bsm = b.id
+        where b.date_bsm >= dateadd(day, -@days, getdate()) and ba.id_article in (${r.recordset.map((a) => Number(a.id)).join(',')})
+        group by ba.id_article`);
+      c.recordset.forEach((x) => avg.set(x.id_article, Number(x.qt) / WIN));
+    }
+    const couverture = (a) => { const v = avg.get(a.id); if (!(v > 0)) return null; return Math.max(0, Math.round(Number(a.stock_neuf) / v)); };
+    res.json({ articles: r.recordset.map((a) => ({ couverture_jours: couverture(a), conso_jour: avg.get(a.id) ? Math.round(avg.get(a.id) * 100) / 100 : null, id: a.id, code: (a.code_article || '').trim(), designation: (a.designation || '').trim(),
       stock: Number(a.stock_neuf), mini: Number(a.stock_mini), maxi: Number(a.stock_maxi || 0), rupture: Number(a.stock_neuf) <= 0,
       suggere: suggestQty(a.stock_neuf, a.stock_mini, a.stock_maxi), da_en_cours: open.has(a.id) })) });
   } catch (err) {

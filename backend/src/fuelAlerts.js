@@ -23,32 +23,34 @@ async function checkFuelAlerts(now = new Date()) {
   const rows = await loadSorties(pool, new Date(today.getTime() - 180 * 86400000), today);
   const recent = iso(new Date(today.getTime() - LOOKBACK_DAYS * 86400000));
 
-  const flagged = [];
-  for (const list of analyseAll(rows, { perEngine: await loadFuelSettings() }).values()) {
-    for (const x of list) if (x.alertes.length && iso(new Date(x.date)) >= recent) flagged.push(x);
-  }
-  if (flagged.length === 0) return 0;
-
+  const settings = await loadFuelSettings();
+  const analysed = [...analyseAll(rows, { perEngine: settings }).values()];
+  const recentRows = (pick) => analysed.flatMap((list) => list.filter((x) => pick(x) && iso(new Date(x.date)) >= recent));
+  const kinds = [
+    { type: 'fuel_alert', flagged: recentRows((x) => x.alertes.length), title: 'Consommation gasoil anormale',
+      body: (x, nom, jour) => `${nom} : ${describe(x)} le ${jour}` },
+    { type: 'fuel_no_counter', flagged: recentRows((x) => x.sans_compteur), title: 'Compteur non saisi',
+      body: (x, nom, jour) => `${nom} : ${Number(x.quantite)} L servis le ${jour} sans relevé de compteur.` }
+  ];
   const appPool = await getAppPool();
-  const rq = appPool.request();
-  flagged.forEach((x, i) => rq.input(`i${i}`, sql.Int, x.id));
-  const seen = await rq.query(
-    `select distinct id_ref from app_notification_log
-     where type = 'fuel_alert' and id_ref in (${flagged.map((_, i) => `@i${i}`).join(',')})`);
-  const done = new Set(seen.recordset.map((r) => r.id_ref));
-  const fresh = flagged.filter((x) => !done.has(x.id)).sort((a, b) => a.id - b.id);
-
   let sent = 0;
-  for (const x of fresh.slice(0, MAX_PER_RUN)) {
-    const nom = `${(x.engin || '').trim()} ${(x.matricule || '').trim()}`.trim();
-    await notifyRoles(ROLES, {
-      type: 'fuel_alert', idRef: x.id,
-      title: 'Consommation gasoil anormale',
-      body: `${nom} : ${describe(x)} le ${iso(new Date(x.date)).split('-').reverse().join('/')}`
-    });
-    sent++;
+  for (const k of kinds) {
+    if (k.flagged.length === 0) continue;
+    const rq = appPool.request().input('t', sql.VarChar, k.type);
+    k.flagged.forEach((x, i) => rq.input(`i${i}`, sql.Int, x.id));
+    const seen = await rq.query(
+      `select distinct id_ref from app_notification_log
+       where type = @t and id_ref in (${k.flagged.map((_, i) => `@i${i}`).join(',')})`);
+    const done = new Set(seen.recordset.map((r) => r.id_ref));
+    const fresh = k.flagged.filter((x) => !done.has(x.id)).sort((a, b) => a.id - b.id);
+    for (const x of fresh.slice(0, MAX_PER_RUN)) {
+      const nom = `${(x.engin || '').trim()} ${(x.matricule || '').trim()}`.trim();
+      await notifyRoles(ROLES, { type: k.type, idRef: x.id, title: k.title,
+        body: k.body(x, nom, iso(new Date(x.date)).split('-').reverse().join('/')) });
+      sent++;
+    }
+    if (fresh.length > MAX_PER_RUN) console.log(`[fuel] ${fresh.length - MAX_PER_RUN} more ${k.type} alert(s) will be sent on the next run.`);
   }
-  if (fresh.length > MAX_PER_RUN) console.log(`[fuel] ${fresh.length - MAX_PER_RUN} more alert(s) will be sent on the next run.`);
   return sent;
 }
 
