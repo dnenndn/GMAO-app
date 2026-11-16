@@ -36,6 +36,7 @@ const { startDailyAlerts } = require('./alerts');
 const parcRoutes = require('./routes/parc');
 const { requireAuth } = require('./middleware/auth');
 const { requireFeature, requireAny } = require('./features');
+const daReviewRoutes = require('./routes/daReview');
 const permissionsRoutes = require('./routes/permissions');
 const { apiLimiter, securityHeaders, corsOptions, checkSecrets } = require('./security');
 
@@ -75,6 +76,7 @@ app.use('/api/production', requireAuth, requireFeature('production.view'), produ
 app.use('/api/carburant', requireAuth, requireFeature('parc.view'), carburantRoutes);
 app.use('/api/parc', requireAuth, requireFeature('parc.view'), parcRoutes);
 app.use('/api/permissions', permissionsRoutes);
+app.use('/api/da-review', daReviewRoutes);
 app.use('/api/maintenance', requireAuth, requireAny(['maintenance.view', 'di.create']), maintenanceRoutes);
 app.use('/api/achats', achatsRoutes);
 app.use('/api/stock-insight', requireAuth, requireAny(['stock.insight', 'stock.valuation']), stockInsightRoutes);

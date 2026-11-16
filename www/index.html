@@ -561,7 +561,7 @@
     selectedArticle: null,
     bsmLines: [],
     daLines: [],
-    sub: { bsm: 'new', brm: 'new', da: 'new', atelier: 'open', parc: 'conso', maintenance: 'di', achats: 'synth', analyse: 'min' },
+    sub: { bsm: 'new', brm: 'new', da: 'review', atelier: 'open', parc: 'conso', maintenance: 'di', achats: 'synth', analyse: 'min' },
     parc: null,
     prod: null,
     daOptions: null,
@@ -749,7 +749,7 @@
     }
     // Two entries cover the business objects: Magasin (BSM / BRM / DA, plus
     // Réception for managers) and Production (rapports + ordres de fabrication).
-    const MAG = ['bsm.create', 'brm.create', 'da.create', 'reception.use', 'stock.insight', 'achats.view', 'bsm.validate', 'brm.validate'];
+    const MAG = ['bsm.create', 'brm.create', 'da.create', 'da.review', 'reception.use', 'stock.insight', 'achats.view', 'bsm.validate', 'brm.validate'];
     const tabs = [
       tabButton('accueil', '🏠', 'Accueil'),
       can('stock.view') ? tabButton('stock', '📦', 'Stock') : '',
@@ -816,7 +816,7 @@
     if (state.tab === 'rapports') return renderRapports();
     if (state.tab === 'bsm') return renderHub('bsm', { new: renderBsm, pending: (r) => renderPending(r, 'bsm'), history: (r) => renderHistorique(r, 'bsm') });
     if (state.tab === 'brm') return renderHub('brm', { new: renderBrm, pending: (r) => renderPending(r, 'brm'), history: (r) => renderHistorique(r, 'brm') });
-    if (state.tab === 'da') return renderHub('da', { new: renderDa, mine: renderDaMine });
+    if (state.tab === 'da') return renderHub('da', { review: renderDaReview, new: renderDa, mine: renderDaMine });
     if (state.tab === 'atelier') return renderHub('atelier', { open: (r) => renderAtelierList(r, 'open'), solde: (r) => renderAtelierList(r, 'solde') });
     if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
@@ -832,7 +832,7 @@
   const HUBS = {
     bsm: [['new', 'Nouvelle', 'bsm.create'], ['pending', 'À valider', 'bsm.validate'], ['history', 'Historique', 'bsm.validate']],
     brm: [['new', 'Nouveau', 'brm.create'], ['pending', 'À valider', 'brm.validate'], ['history', 'Historique', 'brm.validate']],
-    da: [['new', 'Nouvelle', 'da.create'], ['mine', 'Mes demandes', 'da.create']],
+    da: [['review', 'À traiter', 'da.review'], ['new', 'Nouvelle', 'da.create'], ['mine', 'Mes demandes', 'da.create']],
     atelier: [['open', 'OF à solder', null], ['solde', 'Soldés', null]],
     maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
@@ -1102,8 +1102,21 @@
         ${o.intervenants.map((s) => `<div class="line-item"><div class="line-name">${escapeHtml(s.nom || '—')}</div><span>${s.heures} h${money ? ' · ' + fmtMoney0(s.cout) : ''}</span></div>`).join('') || '<div class="muted">Aucun</div>'}
         <h3>Pièces sorties</h3>
         ${o.pieces.map((p) => `<div class="line-item"><div class="line-name">${escapeHtml(p.designation)}<br><span class="muted">${escapeHtml(p.code)} · ${frDate(p.date)}</span></div><span>× ${fmtQty(p.quantite)}${money ? ' · ' + fmtMoney0(p.cout) : ''}</span></div>`).join('') || '<div class="muted">Aucune</div>'}
+        <h3>Notes</h3>
+        ${(o.notes || []).map((n) => `<div class="line-item" style="align-items:flex-start"><div class="line-name">${n.kind === 'cloture' ? '🏁 <strong>Clôture demandée</strong><br>' : ''}${escapeHtml(n.texte)}<br><span class="muted">${escapeHtml(n.auteur)} · ${new Date(n.date).toLocaleString('fr-FR')}</span></div></div>`).join('') || '<div class="muted">Aucune note</div>'}
+        ${o.can_update ? `<textarea id="ot-note" rows="2" maxlength="500" placeholder="Note, travaux réalisés…" style="margin-top:8px"></textarea>
+          <div style="display:flex;gap:8px;margin-top:6px"><button class="ghost" id="ot-add" style="flex:1">Ajouter la note</button><button class="ghost" id="ot-req" style="flex:1">🏁 Demander la clôture</button></div><div id="ot-msg"></div>` : ''}
         ${money ? `<p style="margin-top:10px"><strong>Coût :</strong> main d'œuvre ${fmtMoney0(o.cout_main_oeuvre)} + pièces ${fmtMoney0(o.cout_pieces)} = <strong>${fmtMoney0(o.cout_main_oeuvre + o.cout_pieces)}</strong></p>` : ''}
         <button class="ghost" id="ot-close" style="width:100%;margin-top:12px">Fermer</button>`;
+      const post = async (cloture) => {
+        const texte = sheet.querySelector('#ot-note').value.trim(); const msg = sheet.querySelector('#ot-msg');
+        if (!texte) { msg.innerHTML = `<div class="error">${cloture ? 'Expliquez brièvement ce qui a été fait.' : 'Écrivez une note.'}</div>`; return; }
+        if (cloture && !confirm("Envoyer la demande de clôture aux responsables maintenance ? L'OT sera clôturé sur le poste de bureau.")) return;
+        try { await api(`/maintenance/ot/${id}/note`, { method: 'POST', body: { texte, cloture } }); showToast(cloture ? 'Demande de clôture envoyée' : 'Note ajoutée'); close(); openOtSheet(id); }
+        catch (e) { msg.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+      };
+      const add = sheet.querySelector('#ot-add'), req = sheet.querySelector('#ot-req');
+      if (add) { add.onclick = () => post(false); req.onclick = () => post(true); }
     } catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="ot-close" style="width:100%">Fermer</button>`; }
     sheet.querySelector('#ot-close').onclick = close;
   }
@@ -1159,6 +1172,29 @@
   const monthTitle = (m) => { const [y, mo] = m.split('-').map(Number); return new Date(y, mo - 1, 1).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' }).replace('.', '').toUpperCase(); };
   const TBL = 'width:100%;border-collapse:collapse;font-size:0.82rem';
   const TD = 'border:1px solid var(--line);padding:5px 5px';
+  // Share the displayed synthesis as a PNG (WhatsApp, mail...): drawn on a canvas, no library.
+  async function shareTablePng(title, head, rows, foot) {
+    const cols = head.length, W = 760, pad = 24, rh = 34, colW = [W - pad * 2 - (cols - 1) * 140, ...Array(cols - 1).fill(140)];
+    const H = pad * 2 + 56 + rh * (rows.length + 1 + foot.length) + 10;
+    const c = document.createElement('canvas'); c.width = W * 2; c.height = H * 2; const g = c.getContext('2d'); g.scale(2, 2);
+    g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.fillStyle = '#111'; g.textBaseline = 'middle';
+    g.font = 'bold 22px sans-serif'; g.textAlign = 'center'; g.fillText(title, W / 2, pad + 14);
+    let y = pad + 56;
+    const row = (cells, bold, fill) => {
+      let x = pad; if (fill) { g.fillStyle = fill; g.fillRect(pad, y, W - pad * 2, rh); g.fillStyle = '#111'; }
+      g.font = (bold ? 'bold ' : '') + '16px sans-serif';
+      cells.forEach((t, i) => { g.strokeStyle = '#999'; g.strokeRect(x, y, colW[i], rh); g.textAlign = i === 0 ? 'left' : 'right';
+        g.fillText(String(t ?? ''), i === 0 ? x + 8 : x + colW[i] - 8, y + rh / 2, colW[i] - 16); x += colW[i]; });
+      y += rh;
+    };
+    row(head, true, '#e8e8e8'); rows.forEach((r) => row(r, false)); foot.forEach((r) => row(r, true, '#f3f3f3'));
+    const blob = await new Promise((ok) => c.toBlob(ok, 'image/png'));
+    const file = new File([blob], title.replace(/[^\w]+/g, '_') + '.png', { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title }); return; }
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000); showToast('Image enregistrée dans les téléchargements');
+  }
+  const shareBtn = () => '<button class="ghost" id="sy-share" style="width:100%;margin-top:12px">📤 Partager (image)</button>';
   async function renderAchatsSynth(root) {
     state.syn = state.syn || { month: isoDate().slice(0, 7), source: 'livraisons', view: 'general' };
     const S = state.syn;
@@ -1185,13 +1221,16 @@
           ${d.familles.length ? `<table style="${TBL}"><tr><th style="${TD};text-align:left">Désignation</th><th style="${TD};text-align:right">TOTAL TTC</th></tr>
             ${d.familles.map((f) => `<tr><td style="${TD}">${escapeHtml(f.famille)}</td><td style="${TD};text-align:right">${fmtMoney(f.total_ttc)}</td></tr>`).join('')}</table>
             <div style="text-align:right;margin-top:10px"><span style="display:inline-block;border:2px solid var(--ink);padding:6px 14px;font-weight:700">${fmtMoney(d.total_ttc)}</span></div>
-            <div class="muted" style="text-align:right;margin-top:4px">HT : ${fmtMoney(d.total_ht)}</div>` : '<div class="empty">Aucun achat sur ce mois</div>'}
+            <div class="muted" style="text-align:right;margin-top:4px">HT : ${fmtMoney(d.total_ht)}</div>${shareBtn()}` : '<div class="empty">Aucun achat sur ce mois</div>'}
           <h3 style="margin:16px 0 6px">Statut général du mois</h3>
           <div class="muted">Commandes (date de signature)</div>
           ${st.commandes.map((c) => `<div class="line-item"><div class="line-name">${escapeHtml(c.label)}</div><span>${c.nb} · ${fmtMoney0(c.ttc)}</span></div>`).join('') || '<div class="muted">Aucune</div>'}
           <div class="line-item"><div class="line-name">BL non facturés</div><span>${st.bl_non_factures.nb} · ${fmtMoney0(st.bl_non_factures.ttc)}</span></div>
           <div class="muted" style="margin-top:6px">Demandes d'achat</div>
           ${st.da.map((c) => `<div class="line-item"><div class="line-name">${escapeHtml(c.label)}</div><span>${c.nb}</span></div>`).join('') || '<div class="muted">Aucune</div>'}`;
+        const sh = box.querySelector('#sy-share');
+        if (sh) sh.onclick = () => shareTablePng('ÉTAT ACHAT PAR FAMILLE ' + monthTitle(S.month), ['Désignation', 'TOTAL TTC'],
+          d.familles.map((f) => [f.famille, fmtMoney(f.total_ttc)]), [['TOTAL TTC', fmtMoney(d.total_ttc)], ['TOTAL HT', fmtMoney(d.total_ht)]]).catch((e) => { if (e.name !== 'AbortError') showToast(e.message, true); });
       } else {
         const d = await api(`/achats/synthese/categories?month=${S.month}&source=${S.source}`, { fresh: true });
         const q = (n) => (n ? Number(n).toLocaleString('fr-FR', { maximumFractionDigits: 0 }) : '');
@@ -1204,7 +1243,10 @@
           </table>
           <table style="${TBL};margin-top:12px"><tr><td style="${TD};font-weight:700">TOTAL ACHATS</td><td style="${TD};text-align:right;font-weight:700">${fmtMoney(d.total_achats)}</td></tr>
             <tr><td style="${TD};font-weight:700">TOTAL CONSOMMATION</td><td style="${TD};text-align:right;font-weight:700">${fmtMoney(d.total_consommation)}</td></tr></table>
-          <div class="muted" style="margin-top:8px">Achats en TTC. Consommation : sorties magasin (BSM) au prix HT ; gasoil : sorties carburant des engins. Touchez une catégorie pour le détail.</div>`;
+          <div class="muted" style="margin-top:8px">Achats en TTC. Consommation : sorties magasin (BSM) au prix HT ; gasoil : sorties carburant des engins. Touchez une catégorie pour le détail.</div>${shareBtn()}`;
+        box.querySelector('#sy-share').onclick = () => shareTablePng('ÉTAT ACHATS MOIS ' + monthTitle(S.month), ['Catégorie', 'QTÉ', 'MONTANT'],
+          d.categories.flatMap((c) => [[c.label + ' · ACHAT', q(c.achat.qte), fmtMoney(c.achat.montant)], ['   CONSOMMATION', q(c.consommation.qte), fmtMoney(c.consommation.montant)]]),
+          [['TOTAL ACHATS', '', fmtMoney(d.total_achats)], ['TOTAL CONSOMMATION', '', fmtMoney(d.total_consommation)]]).catch((e) => { if (e.name !== 'AbortError') showToast(e.message, true); });
         box.querySelectorAll('[data-cat]').forEach((r) => { r.onclick = async () => {
           const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
           try {
@@ -1337,9 +1379,9 @@
     }
   }
   function tabAllowed(tab) {
-    const need = { stock: ['stock.view'], bsm: ['bsm.create'], brm: ['brm.create'], da: ['da.create'], production: ['production.view'], rapports: ['production.view'],
+    const need = { stock: ['stock.view'], bsm: ['bsm.create'], brm: ['brm.create'], production: ['production.view'], rapports: ['production.view'],
       maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], users: ['users.admin'], reception: ['reception.use'],
-      achats: ['achats.view'], analyse: ['stock.insight', 'stock.valuation'] }[tab];
+      da: ['da.create', 'da.review'], achats: ['achats.view'], analyse: ['stock.insight', 'stock.valuation'] }[tab];
     return !need || need.some(can);
   }
   setInterval(() => { if (!document.hidden) refreshPerms(); }, 120000);
@@ -1596,11 +1638,56 @@
       <div class="card" id="results"><div class="empty">Tapez pour rechercher…</div></div>
     `;
     const input = document.getElementById('search');
+    input.parentElement.insertAdjacentHTML('beforeend', '<button class="ghost" id="qr-scan" style="width:100%;margin-top:8px">📷 Scanner un QR code</button>');
+    document.getElementById('qr-scan').onclick = () => scanQrPhoto((text) => {
+      const m = /^gmao:(article|engin):(.+)$/i.exec(text.trim());
+      if (m && m[1].toLowerCase() === 'engin') {
+        if (!can('parc.view')) throw new Error('Vous n\'avez pas accès au parc.');
+        return openEnginSheet(Number(m[2]));
+      }
+      state.search = m ? m[2] : text.trim();
+      input.value = state.search; return loadArticles();
+    });
     input.oninput = debounce(async () => {
       state.search = input.value;
       await loadArticles();
     }, 400);
     if (state.search) loadArticles();
+  }
+
+  // QR code: the phone's camera app takes a photo (no camera permission needed
+  // in the app), the code is decoded in the page with jsQR.
+  // Accepted contents: an article code / reference, "gmao:article:<code>" or "gmao:engin:<id>".
+  function loadScript(src) {
+    return new Promise((ok, ko) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => ko(new Error('Lecteur QR indisponible.')); document.head.appendChild(s); });
+  }
+  async function decodeQrFromFile(file) {
+    if (!window.jsQR) await loadScript('vendor/jsQR.js');
+    const bmp = await createImageBitmap(file);
+    // try a few sizes: large photos can fail to decode at full resolution
+    for (const max of [1280, 800, 2000]) {
+      const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+      const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(bmp, 0, 0, w, h);
+      const r = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+      if (r && r.data) return r.data;
+    }
+    return null;
+  }
+  function scanQrPhoto(onText) {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*'; inp.setAttribute('capture', 'environment');
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0]; if (!f) return;
+      try {
+        showToast('Lecture du QR code…');
+        const text = await decodeQrFromFile(f);
+        if (!text) { showToast('Aucun QR code lisible sur la photo. Rapprochez-vous et réessayez.', true); return; }
+        await onText(text);
+      } catch (e) { showToast(e.message || 'Lecture impossible.', true); }
+    };
+    inp.click();
   }
 
   let stockSearchCtrl = null;
@@ -1759,6 +1846,59 @@
     wireArticlePicker('da-search', 'da-suggestions', addDaLine);
     renderDaLines();
     document.getElementById('submit-da').onclick = submitDa;
+  }
+
+  // ---- DA review (approvers): confirm / refuse / send to admin / postpone -------------
+  const DA_TABS = [[0, 'En cours'], [3, "Chez l'admin"], [4, 'Reportées']];
+  async function renderDaReview(root) {
+    state.daRev = state.daRev || { statut: 0 };
+    root.innerHTML = '<div class="card" style="padding:10px"><div class="segmented" id="dr-tabs" style="margin-top:0"></div></div><div class="card" id="dr-body"><div class="empty">Chargement…</div></div>';
+    const box = root.querySelector('#dr-body'), tabs = root.querySelector('#dr-tabs');
+    const load = async () => {
+      try {
+        const d = await api(`/da-review?statut=${state.daRev.statut}`, { fresh: true });
+        tabs.innerHTML = DA_TABS.map(([k, l]) => `<button type="button" data-k="${k}" class="${state.daRev.statut === k ? 'selected' : ''}">${l}${d.counts[k] ? ` (${d.counts[k]})` : ''}</button>`).join('');
+        tabs.querySelectorAll('button').forEach((b) => { b.onclick = () => { state.daRev.statut = Number(b.dataset.k); box.innerHTML = '<div class="empty">Chargement…</div>'; load(); }; });
+        if (!d.da.length) { box.innerHTML = '<div class="empty">Aucune demande</div>'; return; }
+        box.innerHTML = d.da.map((x) => `<div class="article-row" data-da="${x.id}" style="cursor:pointer;align-items:flex-start"><div style="min-width:0"><div class="name">DA #${x.id} · ${escapeHtml(x.demandeur || x.createur || '')}</div><div class="code">${frDate(x.date)} ${escapeHtml(x.heure || '')} · ${x.nb_lignes} article(s) · délai ${x.delai} ${escapeHtml((x.periode || '').toLowerCase())}</div></div>${pill(x.statut_label, false)}</div>`).join('');
+        box.querySelectorAll('[data-da]').forEach((r) => { r.onclick = () => openDaSheet(Number(r.dataset.da), load); });
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    load();
+  }
+  async function openDaSheet(id, onChange) {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    let d;
+    try { d = await api(`/da-review/${id}`, { fresh: true }); }
+    catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="da-close" style="width:100%">Fermer</button>`; sheet.querySelector('#da-close').onclick = close; return; }
+    const A = d.actions;
+    sheet.innerHTML = `
+      <h2 style="margin-top:0">DA #${d.id}</h2>
+      <div style="margin-bottom:6px">${pill(d.statut_label, false)}</div>
+      <div class="muted">${frDate(d.date)} ${escapeHtml(d.heure || '')} · demandeur ${escapeHtml(d.demandeur || '—')} · saisi par ${escapeHtml(d.createur || '—')} · délai ${d.delai} ${escapeHtml((d.periode || '').toLowerCase())}</div>
+      ${d.cause ? `<div class="error">Refus : ${escapeHtml(d.cause)}</div>` : ''}
+      <div style="margin-top:10px">${d.lines.map((l) => `<div class="line-item" style="align-items:flex-start"><div class="line-name">${escapeHtml(l.designation)}<br><span class="muted">${escapeHtml(l.code)} · stock ${fmtQty(l.stock)}${l.motif ? ' · ' + escapeHtml(l.motif) : ''}${l.equipements.length ? '<br>🔧 ' + escapeHtml(l.equipements.join(', ')) : ''}</span></div><strong>× ${fmtQty(l.qt)}</strong></div>`).join('')}</div>
+      <div id="da-form"></div><div id="da-msg"></div>
+      ${A.includes('confirmer') ? '<button class="primary" id="da-ok" style="width:100%;margin-top:12px">✅ Confirmer</button>' : ''}
+      ${A.includes('refuser') ? '<button class="ghost" id="da-no" style="width:100%;margin-top:8px">⛔ Refuser…</button>' : ''}
+      ${A.includes('admin') ? '<button class="ghost" id="da-adm" style="width:100%;margin-top:8px">➡️ Envoyer à l\'administrateur</button>' : ''}
+      ${A.includes('reporter') ? '<button class="ghost" id="da-rep" style="width:100%;margin-top:8px">🗓 Reporter…</button>' : ''}
+      ${A.includes('retourner') ? '<button class="ghost" id="da-back" style="width:100%;margin-top:8px">↩️ Remettre en cours</button>' : ''}
+      <button class="ghost" id="da-close" style="width:100%;margin-top:8px">Fermer</button>`;
+    sheet.querySelector('#da-close').onclick = close;
+    const msg = sheet.querySelector('#da-msg'), form = sheet.querySelector('#da-form');
+    const send = async (action, body, ask) => {
+      if (ask && !confirm(ask)) return;
+      sheet.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      try { await api(`/da-review/${id}/${action}`, { method: 'POST', body: body || {} }); showToast('Demande mise à jour'); close(); onChange && onChange(); }
+      catch (e) { sheet.querySelectorAll('button').forEach((b) => { b.disabled = false; }); msg.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    const on = (sel, fn) => { const b = sheet.querySelector(sel); if (b) b.onclick = fn; };
+    on('#da-ok', () => send('confirmer', {}, `Confirmer la demande d'achat #${id} ?`));
+    on('#da-adm', () => send('admin', {}, `Envoyer la DA #${id} à l'administrateur ?`));
+    on('#da-back', () => send('retourner', {}, `Remettre la DA #${id} en cours ?`));
+    on('#da-no', () => { form.innerHTML = '<label>Cause du refus</label><textarea id="da-cause" rows="3" maxlength="250"></textarea><button class="primary" id="da-no-go" style="width:100%;margin-top:8px">Confirmer le refus</button>'; form.querySelector('#da-no-go').onclick = () => send('refuser', { cause: form.querySelector('#da-cause').value }); });
+    on('#da-rep', () => { form.innerHTML = `<label>Nouvelle date</label><input type="date" id="da-date" min="${isoDate()}" value="${isoDate()}"><button class="primary" id="da-rep-go" style="width:100%;margin-top:8px">Confirmer le report</button>`; form.querySelector('#da-rep-go').onclick = () => send('reporter', { date: form.querySelector('#da-date').value }); });
   }
 
   function renderDaMine(root) {
@@ -2169,7 +2309,7 @@
     const items = [];
     if (can('bsm.create')) items.push(bigButton('bsm', '📤', 'BSM', 'Bon de sortie magasin'));
     if (can('brm.create')) items.push(bigButton('brm', '↩️', 'BRM', 'Bon de retour magasin'));
-    if (canCreateDa()) items.push(bigButton('da', '🛒', "DA", "Demande d'achat"));
+    if (canCreateDa() || can('da.review')) items.push(bigButton('da', '🛒', "DA", "Demande d'achat"));
     if (can('stock.insight') || can('stock.valuation')) items.push(bigButton('analyse', '📊', 'Analyse stock', 'Sous minimum, dormant, valeur'));
     if (can('achats.view')) items.push(bigButton('achats', '🧾', 'Achats', 'Synthèse, commandes, BL, factures'));
     if (can('reception.use')) items.push(bigButton('reception', '📥', 'Réception', 'Bons de commande en attente'));
@@ -2838,7 +2978,9 @@
     else if (type === 'paperwork_alert') go('parc', 'papiers');
     else if (type === 'stock_alert') go('analyse', 'min');
     else if (type === 'preventive_alert') go('maintenance', 'agenda');
+    else if (type === 'da_created' || type === 'da_admin') go('da', can('da.review') ? 'review' : 'mine');
     else if (type.startsWith('da_')) go('da', 'mine');
+    else if (type === 'ot_close_request') { go('maintenance', 'ot'); if (Number(idRef)) openOtSheet(Number(idRef)); }
     else if (type === 'bsm_created') go('bsm', 'pending');
     else if (type.startsWith('bsm_')) go('bsm', 'history');
     else if (type === 'brm_created') go('brm', 'pending');

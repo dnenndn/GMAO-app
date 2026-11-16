@@ -3,6 +3,7 @@ const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { requireAuth } = require('../middleware/auth');
 const { MAINTENANCE_ROLES } = require('../roles');
+const { loginsByIds } = require('../userLookup');
 const { can, requireFeature } = require('../features');
 const { notifyRoles } = require('../push');
 const { parseDate, iso, period, likeEscape, intParam, todayUtc } = require('../lib');
@@ -392,6 +393,13 @@ router.get('/ot/:id', async (req, res) => {
         from bsm b inner join bsm_article ba on ba.id_bsm = b.id inner join article a on ba.id_article = a.id
         where b.li_ot = @id order by b.date_bsm, a.designation`)
     ]);
+    let notes = [];
+    try {
+      const app = await getAppPool();
+      const nr = await app.request().input('id', sql.Int, id).query('select top 50 n.id, n.id_user, n.kind, n.texte, n.created_at from app_ot_note n where n.id_ot = @id order by n.id desc');
+      const lg = await loginsByIds(nr.recordset.map((x) => x.id_user));
+      notes = nr.recordset.map((x) => ({ id: x.id, kind: x.kind, texte: x.texte, auteur: lg[x.id_user] || '', date: new Date(x.created_at).toISOString() }));
+    } catch (e) { /* notes table not created yet */ }
     const showMoney = can(req, 'money.view');
     const hours = (a, b) => (a && b ? Math.max(0, (new Date(b) - new Date(a)) / 3600000) : 0);
     const intervenants = staff.recordset.map((s) => {
@@ -404,7 +412,7 @@ router.get('/ot/:id', async (req, res) => {
       ...(showMoney ? { cout: Math.round(Number(x.quantite) * Number(x.prix_ht || 0) * 1000) / 1000 } : {})
     }));
     res.json({
-      ...otRow(o, path), n_di: (o.n_di || '').trim(), intervenants, pieces,
+      ...otRow(o, path), n_di: (o.n_di || '').trim(), intervenants, pieces, notes, can_update: can(req, 'ot.update') && (o.statut || '').trim() !== 'Clôturé',
       ...(showMoney ? {
         cout_main_oeuvre: Math.round(intervenants.reduce((s, x) => s + x.cout, 0) * 1000) / 1000,
         cout_pieces: Math.round(pieces.reduce((s, x) => s + x.cout, 0) * 1000) / 1000
@@ -413,6 +421,36 @@ router.get('/ot/:id', async (req, res) => {
   } catch (err) {
     console.error('maintenance ot get error:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// A note on a work order, or a request to close it. The desktop closes an OT
+// itself (it also resets the equipment counters), so the phone only records the
+// note in GMAO_APP and tells the maintenance managers.
+router.post('/ot/:id/note', requireFeature('ot.update'), async (req, res) => {
+  const id = intParam(req.params.id);
+  if (id == null) return res.status(400).json({ error: 'OT invalide.' });
+  const kind = req.body && req.body.cloture === true ? 'cloture' : 'note';
+  const texte = String((req.body && req.body.texte) || '').trim();
+  if (!texte) return res.status(400).json({ error: kind === 'cloture' ? 'Expliquez brièvement ce qui a été fait.' : 'Écrivez une note.' });
+  if (texte.length > 500) return res.status(400).json({ error: 'Note trop longue (500 caractères maximum).' });
+  try {
+    const pool = await getPool();
+    const o = await deletedInt(pool.request()).input('id', sql.Int, id).query('select n_ot, statut from ordre_travail where id = @id and deleted = @del');
+    if (o.recordset.length === 0) return res.status(404).json({ error: 'OT introuvable.' });
+    if ((o.recordset[0].statut || '').trim() === 'Clôturé') return res.status(409).json({ error: 'Cet OT est déjà clôturé.' });
+    const app = await getAppPool();
+    await app.request().input('id', sql.Int, id).input('u', sql.Int, req.user.id).input('k', sql.VarChar, kind).input('t', sql.NVarChar, texte)
+      .query('insert into app_ot_note (id_ot, id_user, kind, texte) values (@id, @u, @k, @t)');
+    res.json({ ok: true });
+    if (kind === 'cloture') {
+      notifyRoles(MAINTENANCE_ROLES, { type: 'ot_close_request', idRef: id, title: 'Clôture d\'OT demandée',
+        body: `${req.user.login || 'Un technicien'} demande la clôture de l'OT ${(o.recordset[0].n_ot || '').trim()} : ${texte.slice(0, 120)}` })
+        .catch((e) => console.error('notify OT close request failed:', e));
+    }
+  } catch (err) {
+    console.error('maintenance ot note error:', err);
+    res.status(500).json({ error: 'Erreur serveur (la table des notes est-elle créée ? voir sql/08_ot_notes.sql).' });
   }
 });
 
