@@ -119,4 +119,35 @@ Logs: `backend\logs\backend.log`. Remove it with `uninstall-autostart.bat`. Clos
 
 ## Extra app tables (GMAO_APP, run once in SSMS)
 
-`sql/05_di_photos.sql` (DI photos) and `sql/06_engin_seuil.sql` (per-engine fuel alert threshold).
+`sql/05_di_photos.sql` (DI photos), `sql/06_engin_seuil.sql` (per-engine fuel alert threshold),
+`sql/07_user_permissions.sql` (per-user feature permissions), `sql/08_ot_notes.sql` (OT notes and closing requests),
+`sql/09_client_ref.sql` (protects against a BSM / DI sent twice by the offline queue).
+
+## Permissions per user
+
+Administrators open *Utilisateurs* > 🔐 next to a user and tick / untick every feature of the app. Only the exceptions
+to the role's defaults are stored. Set `PERMISSION_ADMINS=marwen` in `.env` to limit who may edit permissions to
+the listed logins (default: every Administrateur).
+
+## Offline use on the phone
+
+Recent lists (DI, OT, agenda, DA, reference data, stock alerts, fuel) stay readable without network, with a bar saying
+so. A new BSM or DI created without network is kept on the phone and sent automatically when the server answers again
+(tap the bar to see / cancel the queue). If the request is refused at that time (for example not enough stock any
+more) it stays in the queue with the reason.
+
+## Know when the backend is down (external monitor)
+
+A stopped backend cannot send a notification itself, so use a free external monitor:
+
+1. Create an account on UptimeRobot (or Better Stack / Freshping) and add an **HTTP(s) monitor**.
+2. URL: `https://gmao.ibb.sarl/api/health?deep=1` - answers 200 when the web server and both SQL databases work, 503 when the
+   database cannot be reached. Interval: 5 minutes.
+3. Add your phone as an alert contact (e-mail and/or the monitor's mobile app) so you are warned within minutes.
+
+`run-backend-loop.bat` (installed by `install-autostart.bat`) already restarts the backend after a crash; this monitor
+covers a stopped PC, a lost internet connection or a stopped Cloudflare tunnel.
+
+## Xiaomi phones
+
+See `docs/NOTIFICATIONS_XIAOMI.md` (autostart, battery and lock settings so that notifications arrive).

@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const { idempotent } = require('./idempotency');
 const cors = require('cors');
 
 // Defense in depth: even with the per-route fixes, a single bad request
@@ -58,11 +59,25 @@ app.use(cors(corsOptions()));
 app.use('/api', apiLimiter());
 app.use(express.json());
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+// /api/health = the web server answers; /api/health?deep=1 also checks both SQL databases
+// (use the deep one for an external uptime monitor, see BACKEND_README.md).
+app.get('/api/health', async (req, res) => {
+  if (!req.query.deep) return res.json({ status: 'ok' });
+  try {
+    const { getPool } = require('./db'); const { getAppPool } = require('./appDb');
+    await (await getPool()).request().query('select 1 as ok');
+    await (await getAppPool()).request().query('select 1 as ok');
+    res.json({ status: 'ok', db: 'ok' });
+  } catch (err) {
+    console.error('health check: database unreachable:', err.message);
+    res.status(503).json({ status: 'down', db: 'unreachable' });
+  }
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api/articles', requireAuth, requireAny(['stock.view', 'bsm.create', 'brm.create', 'da.create']), articlesRoutes);
 app.use('/api/reference-data', referenceDataRoutes);
+app.post(['/api/bsm', '/api/maintenance/di'], requireAuth, idempotent);
 app.use('/api/bsm', bsmRoutes);
 app.use('/api/reception', receptionRoutes);
 app.use('/api/brm', brmRoutes);

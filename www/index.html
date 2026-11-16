@@ -591,6 +591,8 @@
     state.token = null;
     state.user = null;
     state.perms = null;
+    state.offline = false; state.staleAt = null;
+    const nb = document.getElementById('net-bar'); if (nb) nb.remove();
   }
 
   // ---- Theme (dark/light) ----------------------------------------------
@@ -659,7 +661,7 @@
   // True when automatic (not user-triggered) downloads should wait.
   function skipBackground() { return dataSaverOn() && onMeteredNetwork(); }
 
-  async function networkFetch(path, options) {
+  async function networkFetchRaw(path, options) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort('timeout'), 25000);
     let usedBase = getApiBase();   // the address THIS request was sent to
@@ -692,10 +694,10 @@
         const isGet = !options.method || options.method.toUpperCase() === 'GET';
         if (!cancelled && !options._retried && isGet) {
           const found = await rediscoverServer();
-          if (found && found !== usedBase) return networkFetch(path, { ...options, _retried: true });
+          if (found && found !== usedBase) return networkFetchRaw(path, { ...options, _retried: true });
         }
         const err = new Error(cancelled ? 'cancelled' : 'Réseau trop lent ou serveur injoignable.');
-        err.cancelled = cancelled;
+        err.cancelled = cancelled; err.network = !cancelled;
         throw err;
       }
       // Server not reachable: look for its (possibly new) address and retry once.
@@ -704,9 +706,9 @@
       // to avoid doing a write twice.
       if (!options._retried && e instanceof TypeError) {
         const found = await rediscoverServer();
-        if (found && found !== usedBase) return networkFetch(path, { ...options, _retried: true });
+        if (found && found !== usedBase) return networkFetchRaw(path, { ...options, _retried: true });
       }
-      if (e instanceof TypeError) throw new Error('Serveur injoignable. Vérifiez la connexion et l\'adresse du serveur.');
+      if (e instanceof TypeError) { const err = new Error('Serveur injoignable. Vérifiez la connexion et l\'adresse du serveur.'); err.network = true; throw err; }
       throw e;
     } finally {
       clearTimeout(timer);
@@ -726,8 +728,15 @@
       if (hit && Date.now() - hit.at < ttl) return hit.data;
     }
     const run = async () => {
-      const data = await networkFetch(path, options);
+      let data;
+      try { data = await networkFetch(path, options); }
+      catch (e) {
+        const old = e.network && offlineRead(key, path);
+        if (!old) throw e;
+        return old;                      // offline: show what the phone last saw (banner says so)
+      }
       if (cacheTtl(path) > 0) apiCache.set(key, { at: Date.now(), data });
+      offlineSave(key, path, data);
       return data;
     };
     if (options.signal) return run();       // cancellable calls are not shared
@@ -736,6 +745,114 @@
     apiInflight.set(key, p);
     return p;
   }
+
+  // ---- Offline: last-seen lists + queue of writes ---------------------------------
+  // 1. Reads: answers of the main lists are kept on the phone. When the server cannot
+  //    be reached the last copy is shown and a bar says so.
+  // 2. Writes: a new BSM or DI created without network is kept in a queue on the phone and
+  //    sent automatically when the server answers again. Every queued request carries a
+  //    unique client_ref so the server never creates the same document twice.
+  //    Business refusals (e.g. not enough stock by then) are shown in the queue, not retried.
+  const OFFLINE_READ = [/^\/maintenance\/(di|ot|agenda|options|equipements)/, /^\/da\/options/, /^\/reference-data\//, /^\/bsm\/pending/,
+    /^\/brm\/pending/, /^\/movements\/mine/, /^\/stock-insight\//, /^\/da-review/, /^\/carburant\/(engins|alertes)/, /^\/da\/mine/];
+  const OFF_KEY = 'gmao_off_v1', Q_KEY = 'gmao_queue_v1';
+  const lsGet = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
+  function offlineSave(key, path, data) {
+    if (!OFFLINE_READ.some((r) => r.test(path))) return;
+    const txt = JSON.stringify(data); if (txt.length > 150000) return;
+    const all = lsGet(OFF_KEY, {}); all[key] = { at: Date.now(), data };
+    const keys = Object.keys(all).sort((a, b) => all[b].at - all[a].at);
+    keys.slice(40).forEach((k) => delete all[k]);
+    if (!lsSet(OFF_KEY, all)) { keys.slice(10).forEach((k) => delete all[k]); lsSet(OFF_KEY, all); }
+  }
+  function offlineRead(key, path) {
+    if (!OFFLINE_READ.some((r) => r.test(path))) return null;
+    const hit = lsGet(OFF_KEY, {})[key]; if (!hit) return null;
+    state.staleAt = hit.at; updateNetBar();
+    return hit.data;
+  }
+  function netUp() { if (state.offline || state.staleAt) { state.offline = false; state.staleAt = null; updateNetBar(); } if (queueFor().length) syncQueue(); }
+  function netDown() { if (!state.offline) { state.offline = true; updateNetBar(); } }
+  async function networkFetch(path, options) {
+    try { const d = await networkFetchRaw(path, options); netUp(); return d; }
+    catch (e) { if (e.network) netDown(); throw e; }
+  }
+
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
+  const queueAll = () => lsGet(Q_KEY, []);
+  const queueFor = () => queueAll().filter((x) => state.user && x.user === state.user.id);
+  const queueSave = (q) => lsSet(Q_KEY, q);
+  function enqueue(item) {
+    const q = queueAll(); q.push({ id: uuid(), user: state.user.id, at: Date.now(), ...item });
+    if (JSON.stringify(q).length > 1500000 || !queueSave(q)) return false;
+    updateNetBar(); return true;
+  }
+  const blobToDataUrl = (b) => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = ko; r.readAsDataURL(b); });
+  const dataUrlToBlob = (u) => { const [h, b] = u.split(','); const bin = atob(b); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return new Blob([a], { type: (/:(.*?);/.exec(h) || [])[1] || 'image/jpeg' }); };
+  // Sends now; if the server cannot be reached the request is kept and sent later.
+  // Returns { out } when sent, { queued: true } when kept. Other errors are thrown.
+  async function postOrQueue({ path, body, label, kind, photos }) {
+    const withRef = { ...body, client_ref: uuid() };
+    try { return { out: await api(path, { method: 'POST', body: withRef }) }; }
+    catch (e) {
+      if (!e.network) throw e;
+      const urls = []; for (const b of photos || []) urls.push(await blobToDataUrl(b));
+      if (!enqueue({ path, body: withRef, label, kind, photos: urls })) throw new Error('Hors ligne et trop volumineux pour être gardé sur le téléphone. Réessayez avec le réseau.');
+      showToast('📴 Pas de réseau : enregistré sur le téléphone, envoi automatique au retour du réseau');
+      return { queued: true };
+    }
+  }
+  let syncing = false;
+  async function syncQueue() {
+    if (syncing || !state.token || !state.user) return;
+    syncing = true;
+    try {
+      for (const it of queueFor().filter((x) => !x.error)) {
+        try {
+          const out = await api(it.path, { method: 'POST', body: it.body });
+          if (it.kind === 'di' && out.id) for (const p of it.photos || []) { try { await uploadDiPhoto(out.id, dataUrlToBlob(p)); } catch (e) { /* photo lost, DI is created */ } }
+          queueSave(queueAll().filter((x) => x.id !== it.id));
+          showToast(`✓ ${it.label} envoyé`);
+        } catch (e) {
+          if (e.network || /expired|Missing token/i.test(e.message)) break;          // try again later / after login
+          queueSave(queueAll().map((x) => (x.id === it.id ? { ...x, error: e.message } : x)));
+        }
+      }
+    } finally { syncing = false; updateNetBar(); }
+  }
+  function updateNetBar() {
+    let bar = document.getElementById('net-bar');
+    const q = queueFor(), pending = q.filter((x) => !x.error).length, failed = q.length - pending;
+    const msg = [];
+    if (state.offline) msg.push('📴 Serveur injoignable' + (state.staleAt ? ` · données du ${new Date(state.staleAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''));
+    if (pending) msg.push(`⏳ ${pending} envoi(s) en attente`);
+    if (failed) msg.push(`⚠ ${failed} refusé(s)`);
+    if (!msg.length || !state.token) { if (bar) bar.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('div'); bar.id = 'net-bar';
+      bar.style.cssText = 'position:fixed;left:8px;right:8px;bottom:calc(68px + var(--safe-bottom));z-index:30;background:#3b3b3b;color:#fff;border-radius:10px;padding:8px 12px;font-size:0.85rem;text-align:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+      bar.onclick = () => { if (queueFor().length) openQueueSheet(); else checkServerNow(); };
+      document.body.appendChild(bar);
+    }
+    bar.textContent = msg.join(' · ');
+  }
+  async function checkServerNow() { try { await api('/permissions/me', { fresh: true }); showToast('Serveur joignable'); } catch (e) { showToast(e.message, true); } }
+  function openQueueSheet() {
+    const { sheet, close } = openSheet('<div></div>');
+    const draw = () => {
+      const q = queueFor();
+      sheet.innerHTML = `<h2 style="margin-top:0">Envois en attente</h2>` + (q.map((x) => `<div class="line-item" style="align-items:flex-start"><div class="line-name">${escapeHtml(x.label)}<br><span class="muted">${new Date(x.at).toLocaleString('fr-FR')}</span>${x.error ? `<br><span class="error">${escapeHtml(x.error)}</span>` : ''}</div><button class="ghost" data-del="${x.id}" style="padding:4px 10px">${x.error ? 'Supprimer' : 'Annuler'}</button></div>`).join('') || '<div class="empty">Rien en attente</div>')
+        + '<button class="primary" id="q-retry" style="width:100%;margin-top:12px">Envoyer maintenant</button><button class="ghost" id="q-close" style="width:100%;margin-top:8px">Fermer</button>';
+      sheet.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { if (!confirm('Supprimer cet envoi du téléphone ?')) return; queueSave(queueAll().filter((x) => x.id !== b.dataset.del)); updateNetBar(); draw(); }; });
+      sheet.querySelector('#q-close').onclick = close;
+      sheet.querySelector('#q-retry').onclick = async () => { queueSave(queueAll().map((x) => (x.user === state.user.id ? { ...x, error: undefined } : x))); await syncQueue(); draw(); };
+    };
+    draw();
+  }
+  window.addEventListener('online', () => { syncQueue(); });
+  setInterval(() => { if (!document.hidden && state.token && queueFor().some((x) => !x.error)) syncQueue(); }, 45000);
+  setTimeout(() => { updateNetBar(); syncQueue(); }, 3000);
 
   // ---- Rendering -------------------------------------------------------
   const app = document.getElementById('app');
@@ -1041,14 +1158,16 @@
       keep(); const msg = root.querySelector('#f-msg'); msg.innerHTML = '';
       const btn = ev.currentTarget; btn.disabled = true;
       try {
-        const out = await api('/maintenance/di', { method: 'POST', body: {
+        const sent = await postOrQueue({ path: '/maintenance/di', kind: 'di', label: 'Demande d\'intervention', photos: f.photos.map((p) => p.blob), body: {
           id_demandeur: Number(f.dem) || null, id_defaillance: Number(f.ano) || null, urgence: f.urgence, description: f.desc, arret_machine: f.arret,
           atelier: Number(sel('atelier').value) || null, equipement: Number(sel('equipement').value) || null,
           sous_equipement: Number(sel('sous_equipement').value) || null, organe: Number(sel('organe').value) || null } });
+        const out = sent.out || {};
         let failed = 0;
-        for (const p of f.photos) { try { await uploadDiPhoto(out.id, p.blob); } catch (e) { failed++; } URL.revokeObjectURL(p.url); }
+        if (!sent.queued) for (const p of f.photos) { try { await uploadDiPhoto(out.id, p.blob); } catch (e) { failed++; } }
+        f.photos.forEach((p) => URL.revokeObjectURL(p.url));
         state.diForm = null;
-        showToast(`DI ${out.n_di || ''} créée${failed ? ` (${failed} photo(s) non envoyée(s))` : ''}`);
+        if (!sent.queued) showToast(`DI ${out.n_di || ''} créée${failed ? ` (${failed} photo(s) non envoyée(s))` : ''}`);
         state.sub.maintenance = 'di'; state.diF = { statut: 'attente', mine: true, search: '' }; renderTab();
       } catch (e) { btn.disabled = false; msg.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
     };
@@ -1784,15 +1903,13 @@
       return;
     }
     try {
-      const result = await api('/bsm', {
-        method: 'POST',
-        body: {
+      const r = await postOrQueue({ path: '/bsm', kind: 'bsm', label: `Sortie de stock (${state.bsmLines.length} article(s))`, body: {
           id_receptionniste, n_ot, type_stock,
           lines: state.bsmLines.map((l) => ({ id_article: l.id, quantite: l.qty }))
-        }
-      });
-      okBox.textContent = 'Sortie enregistrée.';
-      showToast(result.pending ? '⏳ Sortie enregistrée, en attente de validation' : '✓ Sortie validée avec succès');
+        } });
+      const result = r.out || {};
+      okBox.textContent = r.queued ? 'Enregistrée sur le téléphone, envoi dès que le réseau revient.' : 'Sortie enregistrée.';
+      if (!r.queued) showToast(result.pending ? '⏳ Sortie enregistrée, en attente de validation' : '✓ Sortie validée avec succès');
       state.bsmLines = [];
       renderLines('lines', state.bsmLines);
     } catch (e) {
