@@ -559,7 +559,7 @@
     selectedArticle: null,
     bsmLines: [],
     daLines: [],
-    sub: { bsm: 'new', brm: 'new', da: 'new', atelier: 'open', parc: 'conso', maintenance: 'di', achats: 'cmd', analyse: 'min' },
+    sub: { bsm: 'new', brm: 'new', da: 'new', atelier: 'open', parc: 'conso', maintenance: 'di', achats: 'synth', analyse: 'min' },
     parc: null,
     prod: null,
     daOptions: null,
@@ -808,7 +808,7 @@
     if (state.tab === 'da') return renderHub('da', { new: renderDa, mine: renderDaMine });
     if (state.tab === 'atelier') return renderHub('atelier', { open: (r) => renderAtelierList(r, 'open'), solde: (r) => renderAtelierList(r, 'solde') });
     if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
-    if (state.tab === 'achats') return renderHub('achats', { cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
+    if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
     if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
     if (state.tab === 'reception') return renderReception();
@@ -824,7 +824,7 @@
     da: [['new', 'Nouvelle', false], ['mine', 'Mes demandes', false]],
     atelier: [['open', 'OF à solder', false], ['solde', 'Soldés', false]],
     maintenance: [['di', 'Demandes', false], ['new', 'Nouvelle DI', false], ['ot', 'OT', false], ['agenda', 'Agenda', false]],
-    achats: [['cmd', 'Commandes', false], ['bl', 'BL', false], ['fac', 'Factures', false]],
+    achats: [['synth', 'Synthèse', false], ['cmd', 'Commandes', false], ['bl', 'BL', false], ['fac', 'Factures', false]],
     analyse: [['min', 'Sous minimum', false], ['dormant', 'Dormant', false], ['valeur', 'Valeur', false]],
     parc: [['conso', 'Consommation', false], ['bons', 'Bons', false], ['alertes', 'Alertes', false], ['papiers', 'Papiers', false]]
   };
@@ -1143,6 +1143,69 @@
     root.querySelectorAll('.cf').forEach((b) => { b.onclick = () => { state.cmdF.statut = b.dataset.k; renderAchatsCmd(root); }; });
     root.querySelector('#cmd-search').oninput = debounce((e) => { state.cmdF.search = e.target.value.trim(); load(); }, 300);
     load();
+  }
+  // Synthèse des achats: état par famille (général) and achats vs consommation (par famille).
+  const monthTitle = (m) => { const [y, mo] = m.split('-').map(Number); return new Date(y, mo - 1, 1).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' }).replace('.', '').toUpperCase(); };
+  const TBL = 'width:100%;border-collapse:collapse;font-size:0.82rem';
+  const TD = 'border:1px solid var(--line);padding:5px 5px';
+  async function renderAchatsSynth(root) {
+    state.syn = state.syn || { month: isoDate().slice(0, 7), source: 'livraisons', view: 'general' };
+    const S = state.syn;
+    root.innerHTML = `
+      <div class="card" style="padding:10px">
+        <div style="display:flex;gap:8px">
+          <label style="flex:1" class="muted">Mois<input type="month" id="sy-month" value="${S.month}" max="${isoDate().slice(0, 7)}" /></label>
+          <label style="flex:1" class="muted">Base<select id="sy-src">${[['livraisons', 'Livraisons (BL)'], ['commandes', 'Commandes'], ['factures', 'Factures']].map(([k, l]) => `<option value="${k}" ${S.source === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        </div>
+        <div class="segmented" style="margin-top:8px">${[['general', 'Général'], ['famille', 'Par famille']].map(([k, l]) => `<button type="button" data-k="${k}" class="${S.view === k ? 'selected' : ''}">${l}</button>`).join('')}</div>
+      </div>
+      <div class="card" id="sy-body"><div class="empty">Chargement…</div></div>`;
+    const reload = () => renderAchatsSynth(root);
+    root.querySelector('#sy-month').onchange = (e) => { if (e.target.value) { S.month = e.target.value; reload(); } };
+    root.querySelector('#sy-src').onchange = (e) => { S.source = e.target.value; reload(); };
+    root.querySelectorAll('.segmented button').forEach((b) => { b.onclick = () => { S.view = b.dataset.k; reload(); }; });
+    const box = root.querySelector('#sy-body');
+    try {
+      if (S.view === 'general') {
+        const d = await api(`/achats/synthese/general?month=${S.month}&source=${S.source}`, { fresh: true });
+        const st = d.statuts;
+        box.innerHTML = `
+          <h3 style="text-align:center;margin:0 0 10px">ÉTAT ACHAT PAR FAMILLE ${escapeHtml(monthTitle(S.month))}</h3>
+          ${d.familles.length ? `<table style="${TBL}"><tr><th style="${TD};text-align:left">Désignation</th><th style="${TD};text-align:right">TOTAL TTC</th></tr>
+            ${d.familles.map((f) => `<tr><td style="${TD}">${escapeHtml(f.famille)}</td><td style="${TD};text-align:right">${fmtMoney(f.total_ttc)}</td></tr>`).join('')}</table>
+            <div style="text-align:right;margin-top:10px"><span style="display:inline-block;border:2px solid var(--ink);padding:6px 14px;font-weight:700">${fmtMoney(d.total_ttc)}</span></div>
+            <div class="muted" style="text-align:right;margin-top:4px">HT : ${fmtMoney(d.total_ht)}</div>` : '<div class="empty">Aucun achat sur ce mois</div>'}
+          <h3 style="margin:16px 0 6px">Statut général du mois</h3>
+          <div class="muted">Commandes (date de signature)</div>
+          ${st.commandes.map((c) => `<div class="line-item"><div class="line-name">${escapeHtml(c.label)}</div><span>${c.nb} · ${fmtMoney0(c.ttc)}</span></div>`).join('') || '<div class="muted">Aucune</div>'}
+          <div class="line-item"><div class="line-name">BL non facturés</div><span>${st.bl_non_factures.nb} · ${fmtMoney0(st.bl_non_factures.ttc)}</span></div>
+          <div class="muted" style="margin-top:6px">Demandes d'achat</div>
+          ${st.da.map((c) => `<div class="line-item"><div class="line-name">${escapeHtml(c.label)}</div><span>${c.nb}</span></div>`).join('') || '<div class="muted">Aucune</div>'}`;
+      } else {
+        const d = await api(`/achats/synthese/categories?month=${S.month}&source=${S.source}`, { fresh: true });
+        const q = (n) => (n ? Number(n).toLocaleString('fr-FR', { maximumFractionDigits: 0 }) : '');
+        box.innerHTML = `
+          <h3 style="text-align:center;margin:0 0 10px">ÉTAT ACHATS MOIS ${escapeHtml(monthTitle(S.month))}</h3>
+          <table style="${TBL}"><tr><th style="${TD}" colspan="2"></th><th style="${TD};text-align:right">QTÉ</th><th style="${TD};text-align:right">MONTANT</th></tr>
+          ${d.categories.map((c) => `
+            <tr data-cat="${c.code}" style="cursor:pointer"><td style="${TD};font-weight:700" rowspan="2">${escapeHtml(c.label)} ›</td><td style="${TD};font-weight:600">ACHAT</td><td style="${TD};text-align:right">${q(c.achat.qte)}</td><td style="${TD};text-align:right">${fmtMoney(c.achat.montant)}</td></tr>
+            <tr data-cat="${c.code}" style="cursor:pointer"><td style="${TD};font-weight:600;font-size:0.72rem">CONSOM.</td><td style="${TD};text-align:right">${q(c.consommation.qte)}</td><td style="${TD};text-align:right">${fmtMoney(c.consommation.montant)}</td></tr>`).join('')}
+          </table>
+          <table style="${TBL};margin-top:12px"><tr><td style="${TD};font-weight:700">TOTAL ACHATS</td><td style="${TD};text-align:right;font-weight:700">${fmtMoney(d.total_achats)}</td></tr>
+            <tr><td style="${TD};font-weight:700">TOTAL CONSOMMATION</td><td style="${TD};text-align:right;font-weight:700">${fmtMoney(d.total_consommation)}</td></tr></table>
+          <div class="muted" style="margin-top:8px">Achats en TTC. Consommation : sorties magasin (BSM) au prix HT ; gasoil : sorties carburant des engins. Touchez une catégorie pour le détail.</div>`;
+        box.querySelectorAll('[data-cat]').forEach((r) => { r.onclick = async () => {
+          const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+          try {
+            const x = await api(`/achats/synthese/categories/${r.dataset.cat}?month=${S.month}&source=${S.source}`, { fresh: true });
+            sheet.innerHTML = `<h2 style="margin-top:0">${escapeHtml(x.label)} · ${escapeHtml(monthTitle(S.month))}</h2>` + (x.lignes.length ? x.lignes.map((l) => x.code === 'gasoil'
+              ? `<div class="line-item"><div class="line-name">${escapeHtml(l.nom)}</div><span>${fmtL(l.qte)} · ${fmtMoney0(l.consommation)}</span></div>`
+              : `<div class="line-item" style="align-items:flex-start"><div class="line-name">${escapeHtml(l.nom)}</div><span style="text-align:right">Achat ${fmtMoney0(l.achat)}<br><span class="muted">Conso ${fmtMoney0(l.consommation)}</span></span></div>`).join('') : '<div class="empty">Aucune ligne</div>')
+              + '<button class="ghost" id="sy-close" style="width:100%;margin-top:12px">Fermer</button>';
+          } catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="sy-close" style="width:100%">Fermer</button>`; }
+          sheet.querySelector('#sy-close').onclick = close; }; });
+      }
+    } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
   }
   async function renderAchatsBl(root) {
     mPeriod('bl', 90); state.blF = state.blF || 'all';
