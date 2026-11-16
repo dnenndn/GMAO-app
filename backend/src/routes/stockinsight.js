@@ -1,7 +1,7 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { canSeeMoney } = require('../roles');
+const { can } = require('../features');
 const { likeEscape } = require('../lib');
 const { suggestQty, openDaArticles } = require('../reorder');
 
@@ -43,7 +43,7 @@ router.get('/dormant', async (req, res) => {
         and not exists (select 1 from bsm_article ba inner join bsm b on ba.id_bsm = b.id
                         where ba.id_article = a.id and b.date_bsm >= dateadd(day, -@days, getdate()))
       order by a.stock_neuf * isnull(a.prix_ht, 0) desc`);
-    const money_ok = canSeeMoney(req.user?.fonction);
+    const money_ok = can(req, 'money.view');
     const articles = r.recordset.map((a) => ({ id: a.id, code: (a.code_article || '').trim(), designation: (a.designation || '').trim(),
       stock: Number(a.stock_neuf), derniere_sortie: a.derniere_sortie ? new Date(a.derniere_sortie).toISOString().slice(0, 10) : null,
       ...(money_ok ? { valeur: money(a.stock_neuf * (a.prix_ht || 0)) } : {}) }));
@@ -56,7 +56,7 @@ router.get('/dormant', async (req, res) => {
 
 // Stock value by family (money roles only).
 router.get('/valorisation', async (req, res) => {
-  if (!canSeeMoney(req.user?.fonction)) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
+  if (!can(req, 'stock.valuation')) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
   try {
     const pool = await getPool();
     const r = await pool.request().input('d', sql.Bit, false).query(`

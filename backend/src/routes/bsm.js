@@ -3,7 +3,8 @@ const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { loginsByIds } = require('../userLookup');
 const { requireAuth } = require('../middleware/auth');
-const { MANAGER_ROLES, isManager, requireRole } = require('../roles');
+const { requireFeature, can } = require('../features');
+const { MANAGER_ROLES } = require('../roles');
 const { notifyRoles, notifyUsers } = require('../push');
 
 // Pending requests (and who approved what) live in the small app database;
@@ -138,13 +139,13 @@ async function commitBsm(pool, { id_receptionniste, n_ot, type_stock, id_equipem
 // Managers: committed immediately, real BSM created right away.
 // Everyone else: staged as a pending request - nothing in bsm/article
 // changes until a manager approves it.
-router.post('/', async (req, res) => {
+router.post('/', requireFeature('bsm.create'), async (req, res) => {
   const shapeError = validateShape(req.body);
   if (shapeError) return res.status(400).json({ error: shapeError });
 
   const pool = await getPool();
 
-  if (isManager(req.user.fonction)) {
+  if (can(req, 'bsm.validate')) {
     try {
       const idBsm = await commitBsm(pool, req.body, req.user.id);
       res.status(201).json({ id_bsm: idBsm, pending: false });
@@ -184,7 +185,7 @@ router.post('/', async (req, res) => {
 });
 
 // Pending BSM requests awaiting approval (managers only).
-router.get('/pending', requireRole(MANAGER_ROLES), async (_req, res) => {
+router.get('/pending', requireFeature('bsm.validate'), async (_req, res) => {
   try {
     const pool = await getPool();
     const appPool = await getAppPool();
@@ -235,7 +236,7 @@ router.get('/pending', requireRole(MANAGER_ROLES), async (_req, res) => {
   }
 });
 
-router.post('/pending/:id/approve', requireRole(MANAGER_ROLES), async (req, res) => {
+router.post('/pending/:id/approve', requireFeature('bsm.validate'), async (req, res) => {
   const idPending = Number(req.params.id);
   let appPool = null;
   let claimed = false;
@@ -320,7 +321,7 @@ router.post('/pending/:id/approve', requireRole(MANAGER_ROLES), async (req, res)
   }
 });
 
-router.post('/pending/:id/reject', requireRole(MANAGER_ROLES), async (req, res) => {
+router.post('/pending/:id/reject', requireFeature('bsm.validate'), async (req, res) => {
   const idPending = Number(req.params.id);
   const { reason } = req.body || {};
 
@@ -361,7 +362,7 @@ router.post('/pending/:id/reject', requireRole(MANAGER_ROLES), async (req, res) 
 });
 
 // Full history of real (already-committed, always validated) BSMs (managers only).
-router.get('/history', requireRole(MANAGER_ROLES), async (_req, res) => {
+router.get('/history', requireFeature('bsm.validate'), async (_req, res) => {
   try {
     const pool = await getPool();
     // 'Oui' is a constant here on purpose: this list only ever shows BSMs
@@ -401,7 +402,7 @@ router.get('/history', requireRole(MANAGER_ROLES), async (_req, res) => {
   }
 });
 
-router.get('/:id/lines', requireRole(MANAGER_ROLES), async (req, res) => {
+router.get('/:id/lines', requireFeature('bsm.validate'), async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool

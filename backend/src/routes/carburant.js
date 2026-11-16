@@ -3,6 +3,7 @@ const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { analyseAll, RATIO } = require('../fuelAnalysis');
 const { loadFuelSettings } = require('../fuelSettings');
+const { requireFeature } = require('../features');
 const { getAppPool } = require('../appDb');
 
 // Diesel per engine - READ ONLY. Everything is read from the desktop tables
@@ -191,9 +192,7 @@ router.get('/alertes', async (req, res) => {
 
 // Per-engine alert threshold (managers). ratio: 1.1 - 5 (1.5 = alert at +50 %), or null for the
 // default; actif=false mutes the engine. Stored in GMAO_APP only.
-const SEUIL_ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin'];
-router.put('/seuils/:id', async (req, res) => {
-  if (!SEUIL_ROLES.includes((req.user.fonction || '').trim())) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
+router.put('/seuils/:id', requireFeature('parc.seuils'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Engin invalide.' });
   const b = req.body || {};

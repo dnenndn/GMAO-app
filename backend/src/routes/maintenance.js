@@ -2,7 +2,8 @@ const express = require('express');
 const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { requireAuth } = require('../middleware/auth');
-const { canWriteAtelier, isManager, MAINTENANCE_ROLES } = require('../roles');
+const { MAINTENANCE_ROLES } = require('../roles');
+const { can, requireFeature } = require('../features');
 const { notifyRoles } = require('../push');
 const { parseDate, iso, period, likeEscape, intParam, todayUtc } = require('../lib');
 
@@ -30,8 +31,7 @@ const MAX_PHOTO_BYTES = 1500000;
 class MaintError extends Error {}
 
 function requireWrite(req, res, next) {
-  if (!canWriteAtelier(req.user?.fonction)) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
-  next();
+  return requireFeature('di.create')(req, res, next);
 }
 
 const deletedInt = (rq) => rq.input('del', sql.Int, 0);
@@ -156,8 +156,8 @@ router.get('/di/:id', async (req, res) => {
       ...diRow(row, path),
       ot: ot.recordset.map((o) => ({ id: o.id, n_ot: (o.n_ot || '').trim(), statut: (o.statut || '').trim(), type: (o.type || '').trim() })),
       photos,
-      can_cancel: row.statut === 0 && (mine || isManager(req.user.fonction) || MAINTENANCE_ROLES.includes((req.user.fonction || '').trim())),
-      can_reopen: row.statut === 5 && (mine || isManager(req.user.fonction) || MAINTENANCE_ROLES.includes((req.user.fonction || '').trim()))
+      can_cancel: row.statut === 0 && (mine || can(req, 'di.manage')),
+      can_reopen: row.statut === 5 && (mine || can(req, 'di.manage'))
     });
   } catch (err) {
     console.error('maintenance di get error:', err);
@@ -264,7 +264,7 @@ async function setStatus(req, res, from, to) {
         .query('select statut, createur from demande_intervention with (updlock, rowlock) where id = @id and deleted = @del');
       if (r.recordset.length === 0) throw new MaintError('Demande introuvable.');
       const row = r.recordset[0];
-      const allowed = row.createur === req.user.id || isManager(req.user.fonction) || MAINTENANCE_ROLES.includes((req.user.fonction || '').trim());
+      const allowed = row.createur === req.user.id || can(req, 'di.manage');
       if (!allowed) throw new MaintError("Vous n'avez pas les droits pour cette action.");
       if (row.statut !== from) throw new MaintError(`Impossible : la demande est « ${DI_STATUS[row.statut] || row.statut} ».`);
       await tx.request().input('s', sql.Int, to).input('id', sql.Int, id).query('update demande_intervention set statut = @s where id = @id');
@@ -295,7 +295,7 @@ router.post('/di/:id/photos', requireWrite, express.raw({ type: 'image/jpeg', li
     const di = await deletedInt(pool.request()).input('id', sql.Int, id)
       .query('select createur from demande_intervention where id = @id and deleted = @del');
     if (di.recordset.length === 0) return res.status(404).json({ error: 'Demande introuvable.' });
-    const allowed = di.recordset[0].createur === req.user.id || isManager(req.user.fonction) || MAINTENANCE_ROLES.includes((req.user.fonction || '').trim());
+    const allowed = di.recordset[0].createur === req.user.id || can(req, 'di.manage');
     if (!allowed) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
     const app = await getAppPool();
     const n = await app.request().input('id', sql.Int, id).query('select count(*) as n from app_di_photo where id_di = @id');
@@ -392,7 +392,7 @@ router.get('/ot/:id', async (req, res) => {
         from bsm b inner join bsm_article ba on ba.id_bsm = b.id inner join article a on ba.id_article = a.id
         where b.li_ot = @id order by b.date_bsm, a.designation`)
     ]);
-    const showMoney = require('../roles').canSeeMoney(req.user.fonction);
+    const showMoney = can(req, 'money.view');
     const hours = (a, b) => (a && b ? Math.max(0, (new Date(b) - new Date(a)) / 3600000) : 0);
     const intervenants = staff.recordset.map((s) => {
       const h = hours(s.debut, s.fin);

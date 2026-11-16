@@ -1,7 +1,7 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { canWriteProduction, isManager } = require('../roles');
+const { can, requireFeature } = require('../features');
 
 // Production reports ("rapports de production"), filled from the phone.
 //
@@ -38,10 +38,7 @@ const FUEL_TYPES = [
 ];
 
 function requireWrite(req, res, next) {
-  if (!canWriteProduction(req.user?.fonction)) {
-    return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
-  }
-  next();
+  return requireFeature('production.write')(req, res, next);
 }
 
 function parseId(v) {
@@ -183,7 +180,7 @@ router.get('/reports', async (req_, res) => {
       where date_rapport between cast(@a as date) and cast(@b as date)
       order by date_rapport desc, case poste when 'Jour' then 1 when 'Soir' then 2 else 3 end`,
     [['a', sql.VarChar, from], ['b', sql.VarChar, to]]);
-    res.json({ reports: rows, can_write: canWriteProduction(req_.user.fonction) });
+    res.json({ reports: rows, can_write: can(req_, 'production.write') });
   } catch (err) {
     if (err instanceof ProdError) return res.status(400).json({ error: err.message });
     console.error('production list error:', err);
@@ -403,7 +400,7 @@ router.get('/reports/:id', async (req_, res) => {
 
     res.json({
       ...head[0],
-      can_write: canWriteProduction(req_.user.fonction),
+      can_write: can(req_, 'production.write'),
       produits: brique,
       fabrication,
       four: fourUnits,
@@ -739,7 +736,7 @@ router.post('/reports/:id/anomalies', requireWrite, async (req_, res) => {
     await lockReport(tx, id);
 
     if (nouvelle) {
-      if (!isManager(req_.user?.fonction)) throw new ProdError('Seuls les responsables peuvent créer une nouvelle anomalie.');
+      if (!can(req_, 'production.anomalie_create')) throw new ProdError('Seuls les responsables peuvent créer une nouvelle anomalie.');
       if (nouvelle.length < 3 || nouvelle.length > 100) throw new ProdError("Le nom de l'anomalie doit avoir entre 3 et 100 caractères.");
       const u = await run(tx, 'select unite_production from prod_equipement where id_equipement = @u', [['u', sql.Int, unite]]);
       if (u.length === 0) throw new ProdError('Unité introuvable.');

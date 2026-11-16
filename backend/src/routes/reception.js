@@ -1,10 +1,10 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { MANAGER_ROLES, requireRole } = require('../roles');
+const { requireFeature } = require('../features');
 
 const router = express.Router();
-router.use(requireAuth, requireRole(MANAGER_ROLES));
+router.use(requireAuth, requireFeature('reception.use'));
 
 // Purchase orders still awaiting reception. commande.statut = 1 is the
 // desktop app's own "open, awaiting reception" code (confirmed from its

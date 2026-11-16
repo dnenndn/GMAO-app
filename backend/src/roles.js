@@ -81,6 +81,6 @@ function requireRole(allowedRoles) {
 }
 
 module.exports = {
-  ADMIN_ROLES, MANAGER_ROLES, DA_REVIEW_ROLES, MAINTENANCE_ROLES, MONEY_ROLES, canSeeMoney,
+  ADMIN_ROLES, MANAGER_ROLES, DA_REVIEW_ROLES, DA_ON_BEHALF_ROLES, MAINTENANCE_ROLES, MONEY_ROLES, canSeeMoney,
   isManager, isAdmin, canCreateDa, canCreateDaForOthers, canWriteAtelier, canWriteProduction, requireRole
 };

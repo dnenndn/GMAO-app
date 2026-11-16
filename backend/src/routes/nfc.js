@@ -2,7 +2,7 @@ const express = require('express');
 const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { requireAuth } = require('../middleware/auth');
-const { MANAGER_ROLES, requireRole } = require('../roles');
+const { requireFeature } = require('../features');
 
 // NFC tags <-> articles. The tag is only identified by its UID (nothing is
 // written on the tag). The mapping lives in the small GMAO_APP database.
@@ -53,7 +53,7 @@ router.get('/resolve', async (req, res) => {
   }
 });
 
-router.get('/article/:id', requireRole(MANAGER_ROLES), async (req, res) => {
+router.get('/article/:id', requireFeature('nfc.manage'), async (req, res) => {
   const idArticle = Number(req.params.id);
   if (!Number.isInteger(idArticle) || idArticle <= 0) return res.status(400).json({ error: 'Article invalide.' });
   try {
@@ -69,7 +69,7 @@ router.get('/article/:id', requireRole(MANAGER_ROLES), async (req, res) => {
   }
 });
 
-router.post('/tags', requireRole(MANAGER_ROLES), async (req, res) => {
+router.post('/tags', requireFeature('nfc.manage'), async (req, res) => {
   const uid = normalizeUid(req.body?.uid);
   const idArticle = Number(req.body?.id_article);
   const replace = req.body?.replace === true;
@@ -117,7 +117,7 @@ router.post('/tags', requireRole(MANAGER_ROLES), async (req, res) => {
   }
 });
 
-router.delete('/tags/:uid', requireRole(MANAGER_ROLES), async (req, res) => {
+router.delete('/tags/:uid', requireFeature('nfc.manage'), async (req, res) => {
   const uid = normalizeUid(req.params.uid);
   if (!uid) return res.status(400).json({ error: 'Identifiant de tag invalide.' });
   try {

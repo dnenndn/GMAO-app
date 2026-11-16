@@ -2,6 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { sql, getPool } = require('../db');
+const { effectivePerms } = require('../features');
 const { loginBlocked, loginFailed, loginOk } = require('../security');
 
 const router = express.Router();
@@ -68,9 +69,12 @@ router.post('/login', async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '12h' }
     );
 
+    let permissions = null;
+    try { permissions = await effectivePerms({ id: user.id, fonction }); } catch (e) { /* the app asks /permissions/me */ }
     res.json({
       token,
-      user: { id: user.id, login: login2, fonction }
+      user: { id: user.id, login: login2, fonction },
+      permissions
     });
   } catch (err) {
     console.error('login error:', err);

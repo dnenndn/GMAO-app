@@ -1,7 +1,7 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { canSeeMoney } = require('../roles');
+const { can } = require('../features');
 
 // One-call mobile dashboard: counters only (each one wrapped so a single
 // failing query does not blank the whole screen).
@@ -21,7 +21,7 @@ router.get('/', async (req, res) => {
       one('select count(*) from bsm where cast(date_bsm as date) = cast(getdate() as date)')
     ]);
     const out = { di_attente, ot_ouverts, ot_retard, sous_minimum: sous_min, da_attente, bsm_jour };
-    if (canSeeMoney(req.user?.fonction)) {
+    if (can(req, 'money.view')) {
       out.valeur_stock = await one('select sum(stock_neuf * isnull(prix_ht, 0)) from article where deleted = @b and stock_neuf > 0');
     }
     res.json(out);

@@ -1,7 +1,7 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { canWriteAtelier } = require('../roles');
+const { can, requireFeature } = require('../features');
 
 // Atelier work orders (OF = ordres de fabrication) - "solder" an OF.
 //
@@ -28,10 +28,7 @@ const EPS = 1e-4; // quantities are SQL "real" (float32): never compare with ===
 class OfError extends Error {}
 
 function requireWrite(req, res, next) {
-  if (!canWriteAtelier(req.user?.fonction)) {
-    return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
-  }
-  next();
+  return requireFeature('atelier.write')(req, res, next);
 }
 
 function parseId(v) {
@@ -126,7 +123,7 @@ router.get('/of/:id', async (req, res) => {
     if (!of) return res.status(404).json({ error: 'OF introuvable.' });
     const rec = await pool.request().input('i', sql.Int, id)
       .query('select id, date_reception, qt_recu, etat from atelier_reception where id_atelier = @i order by id');
-    res.json({ ...of, receptions: rec.recordset, can_write: canWriteAtelier(req.user.fonction) });
+    res.json({ ...of, receptions: rec.recordset, can_write: can(req, 'atelier.write') });
   } catch (err) {
     console.error('atelier detail error:', err);
     res.status(500).json({ error: 'Server error fetching OF' });

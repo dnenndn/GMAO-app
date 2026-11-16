@@ -1,7 +1,8 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { DA_REVIEW_ROLES, canCreateDa, canCreateDaForOthers } = require('../roles');
+const { DA_REVIEW_ROLES } = require('../roles');
+const { can } = require('../features');
 const { notifyUsers } = require('../push');
 const { loginsByIds } = require('../userLookup');
 const { suggestQty, openDaArticles } = require('../reorder');
@@ -64,8 +65,8 @@ router.get('/options', async (req, res) => {
   try {
     const fonction = req.user.fonction;
     const options = {
-      can_create: canCreateDa(fonction),
-      can_choose_demandeur: canCreateDaForOthers(fonction),
+      can_create: can(req, 'da.create'),
+      can_choose_demandeur: can(req, 'da.on_behalf'),
       periodes: PERIODES,
       me: { id: req.user.id, login: req.user.login },
       demandeurs: []
@@ -107,9 +108,9 @@ router.get('/articles/:id/equipements', async (req, res) => {
 //   id_demandeur,                       // optional, only honoured for the roles that may
 //   lines: [{ id_article, qt, motif, id_equipements: [..] }]
 // }
-async function createDa(user, payload) {
+async function createDa(user, payload, perms) {
   const fonction = user.fonction;
-  if (!canCreateDa(fonction)) {
+  if (!perms['da.create']) {
     const e = new DaError("Votre rôle ne peut pas créer de demande d'achat.");
     e.status = 403;
     throw e;
@@ -151,7 +152,7 @@ async function createDa(user, payload) {
     // Demandeur: the user themself, unless their role may create on behalf of
     // someone else (then it must be an existing, active user).
     let demandeurId = user.id;
-    if (canCreateDaForOthers(fonction) && id_demandeur != null && Number(id_demandeur) !== user.id) {
+    if (perms['da.on_behalf'] && id_demandeur != null && Number(id_demandeur) !== user.id) {
       const found = await pool
         .request()
         .input('i', sql.Int, Number(id_demandeur))
@@ -254,7 +255,7 @@ function sendDaError(res, err, what) {
 
 router.post('/', async (req, res) => {
   try {
-    res.status(201).json({ id_da: await createDa(req.user, req.body) });
+    res.status(201).json({ id_da: await createDa(req.user, req.body, req.perms || require('../features').permsOf(req)) });
   } catch (err) {
     sendDaError(res, err, 'da create error:');
   }
@@ -267,7 +268,7 @@ router.post('/', async (req, res) => {
 // requires at least one), the motif says where the DA comes from.
 router.post('/reorder', async (req, res) => {
   try {
-    if (!canCreateDa(req.user.fonction)) {
+    if (!can(req, 'da.create')) {
       const e = new DaError("Votre rôle ne peut pas créer de demande d'achat.");
       e.status = 403;
       throw e;
@@ -295,7 +296,7 @@ router.post('/reorder', async (req, res) => {
       out.push({ id_article: a.id, qt, motif: 'Réapprovisionnement - stock sous le minimum', id_equipements: (await equipementsFor(pool, a.id)).map((e) => e.id) });
     }
     if (out.length === 0) throw new DaError('Aucun article à commander (déjà couverts ou plus sous le minimum).');
-    const idDa = await createDa(req.user, { delai: delai ?? 1, periode: periode || 'Semaine', lines: out });
+    const idDa = await createDa(req.user, { delai: delai ?? 1, periode: periode || 'Semaine', lines: out }, require('../features').permsOf(req));
     res.status(201).json({ id_da: idDa, articles: out.length, ignores: skipped });
   } catch (err) {
     sendDaError(res, err, 'da reorder error:');

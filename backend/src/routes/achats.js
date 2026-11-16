@@ -1,7 +1,7 @@
 const express = require('express');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { canSeeMoney } = require('../roles');
+const { can } = require('../features');
 const { iso, period, likeEscape, intParam } = require('../lib');
 
 // Purchasing follow-up - READ ONLY (orders, delivery notes, invoices).
@@ -13,7 +13,7 @@ const { iso, period, likeEscape, intParam } = require('../lib');
 const router = express.Router();
 router.use(requireAuth);
 router.use((req, res, next) => {
-  if (!canSeeMoney(req.user?.fonction)) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
+  if (!can(req, 'achats.view')) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
   next();
 });
 

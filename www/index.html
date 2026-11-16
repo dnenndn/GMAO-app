@@ -543,10 +543,12 @@
   const ADMIN_ROLES = ['Administrateur'];
   const MANAGER_ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin', 'Magasinier'];
   const isManager = () => state.user && MANAGER_ROLES.includes(state.user.fonction);
+  // Per-feature rights come from the server (role default + exceptions set by an administrator).
+  const can = (k) => !!(state.perms && state.perms[k]);
   // Same rule as the desktop and the server: everyone but the Administrateur
   // role can create a demande d'achat (the server enforces it too).
-  const canCreateDa = () => state.user && state.user.fonction !== 'Administrateur';
-  const isAdmin = () => state.user && ADMIN_ROLES.includes(state.user.fonction);
+  const canCreateDa = () => can('da.create');
+  const isAdmin = () => can('users.admin');
 
   // ---- Tiny state / storage helpers ----------------------------------
   const state = {
@@ -576,17 +578,19 @@
         const s = JSON.parse(raw);
         state.token = s.token;
         state.user = s.user;
+        state.perms = s.perms || null;
       }
     } catch (e) {}
   }
   function saveSession() {
-    localStorage.setItem('gmao_session', JSON.stringify({ token: state.token, user: state.user }));
+    localStorage.setItem('gmao_session', JSON.stringify({ token: state.token, user: state.user, perms: state.perms }));
   }
   function clearSession() {
     clearApiCache();
     localStorage.removeItem('gmao_session');
     state.token = null;
     state.user = null;
+    state.perms = null;
   }
 
   // ---- Theme (dark/light) ----------------------------------------------
@@ -658,9 +662,11 @@
   async function networkFetch(path, options) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort('timeout'), 25000);
+    let usedBase = getApiBase();   // the address THIS request was sent to
     if (options.signal) options.signal.addEventListener('abort', () => ctrl.abort('cancelled'));
     try {
-      const res = await fetch(getApiBase() + path, {
+      usedBase = getApiBase();
+      const res = await fetch(usedBase + path, {
         ...options,
         signal: ctrl.signal,
         headers: {
@@ -685,9 +691,8 @@
         const cancelled = ctrl.signal.reason === 'cancelled';
         const isGet = !options.method || options.method.toUpperCase() === 'GET';
         if (!cancelled && !options._retried && isGet) {
-          const before = getApiBase();
           const found = await rediscoverServer();
-          if (found && found !== before) return networkFetch(path, { ...options, _retried: true });
+          if (found && found !== usedBase) return networkFetch(path, { ...options, _retried: true });
         }
         const err = new Error(cancelled ? 'cancelled' : 'Réseau trop lent ou serveur injoignable.');
         err.cancelled = cancelled;
@@ -698,9 +703,8 @@
       // page) is safe to resend. After a timeout only reads are resent (above),
       // to avoid doing a write twice.
       if (!options._retried && e instanceof TypeError) {
-        const before = getApiBase();
         const found = await rediscoverServer();
-        if (found && found !== before) return networkFetch(path, { ...options, _retried: true });
+        if (found && found !== usedBase) return networkFetch(path, { ...options, _retried: true });
       }
       if (e instanceof TypeError) throw new Error('Serveur injoignable. Vérifiez la connexion et l\'adresse du serveur.');
       throw e;
@@ -738,17 +742,23 @@
 
   function render() {
     if (!state.token) return renderLogin();
+    if (!state.perms) {
+      app.innerHTML = '<main style="padding-top:80px"><div class="empty">Chargement…</div></main>';
+      loadPerms().then(() => render());
+      return;
+    }
     // Two entries cover the business objects: Magasin (BSM / BRM / DA, plus
     // Réception for managers) and Production (rapports + ordres de fabrication).
+    const MAG = ['bsm.create', 'brm.create', 'da.create', 'reception.use', 'stock.insight', 'achats.view', 'bsm.validate', 'brm.validate'];
     const tabs = [
       tabButton('accueil', '🏠', 'Accueil'),
-      tabButton('stock', '📦', 'Stock'),
-      tabButton('magasin', '🏬', 'Magasin'),
-      tabButton('production', '📝', 'Production'),
-      tabButton('maintenance', '🔧', 'Maintenance'),
-      tabButton('atelier', '🏭', 'Atelier'),
-      tabButton('parc', '🚜', 'Parc')
-    ];
+      can('stock.view') ? tabButton('stock', '📦', 'Stock') : '',
+      MAG.some(can) ? tabButton('magasin', '🏬', 'Magasin') : '',
+      can('production.view') ? tabButton('production', '📝', 'Production') : '',
+      can('maintenance.view') || can('di.create') ? tabButton('maintenance', '🔧', 'Maintenance') : '',
+      can('atelier.view') ? tabButton('atelier', '🏭', 'Atelier') : '',
+      can('parc.view') ? tabButton('parc', '🚜', 'Parc') : ''
+    ].filter(Boolean);
     if (isAdmin()) {
       tabs.push(tabButton('users', '👤', 'Utilisateurs'));
     }
@@ -794,6 +804,7 @@
   const GROUP_LABEL = { magasin: 'Magasin', production: 'Production' };
 
   function renderTab() {
+    if (!tabAllowed(state.tab)) state.tab = 'accueil';
     const group = SUBVIEWS[state.tab] || state.tab;
     document.querySelectorAll('nav.tabs button').forEach((b) => { const on = b.dataset.tab === group; b.classList.toggle('active', on); if (on && b.scrollIntoView) b.scrollIntoView({ inline: 'center', block: 'nearest' }); });
     if (state.tab === 'production') state.tab = 'rapports';   // Production opens the reports directly
@@ -819,18 +830,18 @@
   // ---- Hubs: one tab per BSM / BRM / DA with sub-sections ----------------
   // [key, label, managerOnly]
   const HUBS = {
-    bsm: [['new', 'Nouvelle', false], ['pending', 'À valider', true], ['history', 'Historique', true]],
-    brm: [['new', 'Nouveau', false], ['pending', 'À valider', true], ['history', 'Historique', true]],
-    da: [['new', 'Nouvelle', false], ['mine', 'Mes demandes', false]],
-    atelier: [['open', 'OF à solder', false], ['solde', 'Soldés', false]],
-    maintenance: [['di', 'Demandes', false], ['new', 'Nouvelle DI', false], ['ot', 'OT', false], ['agenda', 'Agenda', false]],
-    achats: [['synth', 'Synthèse', false], ['cmd', 'Commandes', false], ['bl', 'BL', false], ['fac', 'Factures', false]],
-    analyse: [['min', 'Sous minimum', false], ['dormant', 'Dormant', false], ['valeur', 'Valeur', false]],
-    parc: [['conso', 'Consommation', false], ['bons', 'Bons', false], ['alertes', 'Alertes', false], ['papiers', 'Papiers', false]]
+    bsm: [['new', 'Nouvelle', 'bsm.create'], ['pending', 'À valider', 'bsm.validate'], ['history', 'Historique', 'bsm.validate']],
+    brm: [['new', 'Nouveau', 'brm.create'], ['pending', 'À valider', 'brm.validate'], ['history', 'Historique', 'brm.validate']],
+    da: [['new', 'Nouvelle', 'da.create'], ['mine', 'Mes demandes', 'da.create']],
+    atelier: [['open', 'OF à solder', null], ['solde', 'Soldés', null]],
+    maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
+    achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
+    analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
+    parc: [['conso', 'Consommation', null], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
   function renderHub(tab, renderers) {
-    const items = HUBS[tab].filter((i) => (!i[2] || isManager()) && !(tab === 'analyse' && i[0] === 'valeur' && !canSeeMoney()));
+    const items = HUBS[tab].filter((i) => !i[2] || can(i[2]));
     if (!items.some((i) => i[0] === state.sub[tab])) state.sub[tab] = items[0][0];
     const main = document.getElementById('main');
     main.innerHTML = (items.length > 1 ? `
@@ -847,8 +858,8 @@
 
   // ---- Maintenance: DI (create + follow), OT (follow), agenda -----------------
   const MONEY_ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin', 'Responsable Achat', 'DGA'];
-  const canSeeMoney = () => state.user && MONEY_ROLES.includes(state.user.fonction);
-  const canWriteMaint = () => state.user && state.user.fonction !== 'DGA';
+  const canSeeMoney = () => can('money.view');
+  const canWriteMaint = () => can('di.create');
   const fmtMoney0 = (n) => Number(n || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 });
   const urgClass = (u) => (u === 'Elevée' ? 'low' : '');
   const pill = (t, bad) => `<span class="stock-pill ${bad ? 'low' : ''}" style="white-space:nowrap">${escapeHtml(t)}</span>`;
@@ -1293,14 +1304,46 @@
     const box = document.getElementById('dash-box'); if (!box) return;
     try {
       const d = await api('/dashboard', { fresh: true });
-      const t = (n, label, tab, sub, bad) => n == null ? '' : `<button type="button" class="quick-tile ${bad && n > 0 ? 'primary' : ''}" data-dash="${tab}|${sub}"><span class="qt-icon" style="font-size:1.6rem">${n}</span><span class="qt-label">${label}</span></button>`;
+      const t = (n, label, tab, sub, bad, feat) => n == null || (feat && !can(feat)) ? '' : `<button type="button" class="quick-tile ${bad && n > 0 ? 'primary' : ''}" data-dash="${tab}|${sub}"><span class="qt-icon" style="font-size:1.6rem">${n}</span><span class="qt-label">${label}</span></button>`;
       box.innerHTML = `<div class="section-head"><h2>Aujourd'hui</h2></div><div class="quick-actions">
-        ${t(d.di_attente, 'DI en attente', 'maintenance', 'di', true)}${t(d.ot_ouverts, 'OT ouverts', 'maintenance', 'ot')}${t(d.ot_retard, 'OT en retard', 'maintenance', 'ot', true)}
-        ${t(d.sous_minimum, 'Sous le minimum', 'analyse', 'min', true)}${t(d.da_attente, 'DA en attente', 'da', 'mine')}${t(d.bsm_jour, 'Sorties du jour', 'bsm', 'history')}
-        ${d.valeur_stock != null ? `<button type="button" class="quick-tile" data-dash="analyse|valeur"><span class="qt-icon" style="font-size:1.1rem">${fmtMoney0(d.valeur_stock)}</span><span class="qt-label">Valeur du stock</span></button>` : ''}</div>`;
+        ${t(d.di_attente, 'DI en attente', 'maintenance', 'di', true, 'maintenance.view')}${t(d.ot_ouverts, 'OT ouverts', 'maintenance', 'ot', false, 'maintenance.view')}${t(d.ot_retard, 'OT en retard', 'maintenance', 'ot', true, 'maintenance.view')}
+        ${t(d.sous_minimum, 'Sous le minimum', 'analyse', 'min', true, 'stock.insight')}${t(d.da_attente, 'DA en attente', 'da', 'mine', false, 'da.create')}${t(d.bsm_jour, 'Sorties du jour', 'bsm', 'history', false, 'bsm.validate')}
+        ${d.valeur_stock != null && can('stock.valuation') ? `<button type="button" class="quick-tile" data-dash="analyse|valeur"><span class="qt-icon" style="font-size:1.1rem">${fmtMoney0(d.valeur_stock)}</span><span class="qt-label">Valeur du stock</span></button>` : ''}</div>`;
       box.querySelectorAll('[data-dash]').forEach((b) => { b.onclick = () => { const [tab, sub] = b.dataset.dash.split('|'); state.tab = tab; state.sub[tab] = sub; renderTab(); }; });
     } catch (e) { box.innerHTML = ''; }
   }
+
+  // ---- Per-user rights --------------------------------------------------------
+  async function loadPerms() {
+    try {
+      const d = await api('/permissions/me', { fresh: true });
+      state.perms = d.permissions || {}; state.canEditPerms = !!d.can_edit;
+      saveSession();
+      return true;
+    } catch (e) {
+      if (!state.perms) state.perms = {};   // offline at first start: nothing shown until the server answers
+      return false;
+    }
+  }
+  // An administrator may change rights at any time: re-read them regularly and
+  // redraw only when something actually changed.
+  async function refreshPerms() {
+    if (!state.token) return;
+    const before = JSON.stringify(state.perms);
+    if (!(await loadPerms())) return;
+    if (JSON.stringify(state.perms) !== before) {
+      if (!tabAllowed(state.tab)) state.tab = 'accueil';
+      render();
+    }
+  }
+  function tabAllowed(tab) {
+    const need = { stock: ['stock.view'], bsm: ['bsm.create'], brm: ['brm.create'], da: ['da.create'], production: ['production.view'], rapports: ['production.view'],
+      maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], users: ['users.admin'], reception: ['reception.use'],
+      achats: ['achats.view'], analyse: ['stock.insight', 'stock.valuation'] }[tab];
+    return !need || need.some(can);
+  }
+  setInterval(() => { if (!document.hidden) refreshPerms(); }, 120000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshPerms(); });
 
   function renderLogin() {
     app.innerHTML = `
@@ -1338,6 +1381,7 @@
       const data = await api('/auth/login', { method: 'POST', body: { login, password } });
       state.token = data.token;
       state.user = data.user;
+      state.perms = data.permissions || null;
       saveSession();
       render();
       registerPushNotifications();
@@ -1392,21 +1436,21 @@
       <div id="dash-box"></div>
       <div class="section-head"><h2>Actions rapides</h2></div>
       <div class="quick-actions">
-        <button type="button" class="quick-tile primary" data-tab="bsm">
+        ${can('bsm.create') ? `<button type="button" class="quick-tile primary" data-tab="bsm">
           <span class="qt-icon">📤</span>
           <span class="qt-label">Sortie de stock</span>
           <span class="qt-sub">Créer un BSM</span>
-        </button>
-        <button type="button" class="quick-tile" data-tab="brm">
+        </button>` : ''}
+        ${can('brm.create') ? `<button type="button" class="quick-tile" data-tab="brm">
           <span class="qt-icon">↩️</span>
           <span class="qt-label">Retour magasin</span>
           <span class="qt-sub">Créer un BRM</span>
-        </button>
-        <button type="button" class="quick-tile" data-tab="stock">
+        </button>` : ''}
+        ${can('stock.view') ? `<button type="button" class="quick-tile" data-tab="stock">
           <span class="qt-icon">🔍</span>
           <span class="qt-label">Rechercher</span>
           <span class="qt-sub">Un article</span>
-        </button>
+        </button>` : ''}
       </div>
       <div class="section-head">
         <h2>Derniers mouvements</h2>
@@ -1421,7 +1465,7 @@
     });
     document.getElementById('movements-see-all').onclick = (e) => { e.preventDefault(); openMovementsModal(); };
 
-    if (isManager()) loadAccueilPending();
+    if (can('bsm.validate') || can('brm.validate')) loadAccueilPending();
     loadDashboard();
     loadAccueilMovements();
   }
@@ -1449,7 +1493,7 @@
     };
     box.querySelector('#data-refresh').onclick = () => {
       clearApiCache();
-      if (isManager()) loadAccueilPending(true);
+      if (can('bsm.validate') || can('brm.validate')) loadAccueilPending(true);
       loadAccueilMovements(true);
       refreshBellBadge(true);
     };
@@ -1596,7 +1640,7 @@
           <div class="code">${escapeHtml(a.code_article || '')} ${a.unite ? '· ' + escapeHtml(a.unite) : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:8px">
-          ${isManager() ? `<button class="ghost" data-nfc-article="${a.id}" title="Tags NFC" style="padding:4px 8px">📡</button>` : ''}
+          ${can('nfc.manage') ? `<button class="ghost" data-nfc-article="${a.id}" title="Tags NFC" style="padding:4px 8px">📡</button>` : ''}
           <span class="stock-pill ${low ? 'low' : ''}">${total} ${low ? '⚠' : ''}</span>
         </span>
       </div>
@@ -1912,7 +1956,7 @@
 
   const SEUILS = [['def', 'Par défaut (+50 %)'], ['1.2', '+20 % (très sensible)'], ['1.3', '+30 %'], ['1.75', '+75 %'], ['2', '+100 %'], ['off', 'Alertes désactivées']];
   const seuilValue = (s) => (s.actif === false ? 'off' : s.ratio ? String(s.ratio) : 'def');
-  const canSetSeuil = () => state.user && ['Administrateur', 'Responsable Méthode', 'Responsable Magasin'].includes(state.user.fonction);
+  const canSetSeuil = () => can('parc.seuils');
   async function openEnginSheet(idEngin) {
     const P = parcPeriod();
     const overlay = document.createElement('div');
@@ -2122,12 +2166,13 @@
   }
 
   function renderMagasin() {
-    const items = [bigButton('bsm', '📤', 'BSM', 'Bon de sortie magasin')];
-    items.push(bigButton('brm', '↩️', 'BRM', 'Bon de retour magasin'));
-    if (canCreateDa()) items.push(bigButton('da', '🛒', 'DA', "Demande d'achat"));
-    items.push(bigButton('analyse', '📊', 'Analyse stock', 'Sous minimum, dormant, valeur'));
-    if (canSeeMoney()) items.push(bigButton('achats', '🧾', 'Achats', 'Commandes, BL, factures'));
-    if (isManager()) items.push(bigButton('reception', '📥', 'Réception', 'Bons de commande en attente'));
+    const items = [];
+    if (can('bsm.create')) items.push(bigButton('bsm', '📤', 'BSM', 'Bon de sortie magasin'));
+    if (can('brm.create')) items.push(bigButton('brm', '↩️', 'BRM', 'Bon de retour magasin'));
+    if (canCreateDa()) items.push(bigButton('da', '🛒', "DA", "Demande d'achat"));
+    if (can('stock.insight') || can('stock.valuation')) items.push(bigButton('analyse', '📊', 'Analyse stock', 'Sous minimum, dormant, valeur'));
+    if (can('achats.view')) items.push(bigButton('achats', '🧾', 'Achats', 'Synthèse, commandes, BL, factures'));
+    if (can('reception.use')) items.push(bigButton('reception', '📥', 'Réception', 'Bons de commande en attente'));
     document.getElementById('main').innerHTML = `<div class="big-menu">${items.join('')}</div>`;
     document.querySelectorAll('.big-btn').forEach((b) => {
       b.onclick = () => { state.tab = b.dataset.go; state.error = ''; state.notice = ''; renderTab(); };
@@ -2337,9 +2382,9 @@
     return `<details class="card prod-block anomalies" data-unit="${unit.id_unite}">
       <summary>Arrêts / anomalies${list.length ? ` (${list.length})` : ''}</summary>
       ${list.map((a) => `<div class="line-item"><div class="line-name">${escapeHtml(a.anomalie)}<br><span class="muted">${a.duree} min</span></div>${d.can_write ? `<button type="button" class="ghost" data-adel="${a.id}">✕</button>` : ''}</div>`).join('')}
-      ${d.can_write && (opts.length || isManager()) ? `
+      ${d.can_write && (opts.length || can('production.anomalie_create')) ? `
         <label>Anomalie</label>
-        <select class="an-sel">${opts.map((o) => `<option value="${o.id}">${escapeHtml(o.anomalie)}</option>`).join('')}${isManager() ? '<option value="new">➕ Autre anomalie…</option>' : ''}</select>
+        <select class="an-sel">${opts.map((o) => `<option value="${o.id}">${escapeHtml(o.anomalie)}</option>`).join('')}${can('production.anomalie_create') ? '<option value="new">➕ Autre anomalie…</option>' : ''}</select>
         <input class="an-new" type="text" maxlength="100" placeholder="Nom de la nouvelle anomalie" style="display:none;margin-top:8px" />
         <label>Durée (minutes)</label>
         <input class="an-dur" type="text" inputmode="numeric" placeholder="ex. 45" />
@@ -3031,7 +3076,45 @@
       </div>
     `;
     document.getElementById('create-user').onclick = createUser;
+    await loadPerms();
     loadUsers();
+  }
+
+  // Administrator screen: tick / untick every feature for one user.
+  async function openPermsSheet(id, login) {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    let d;
+    try { d = await api(`/permissions/users/${id}`, { fresh: true }); }
+    catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="pm-close" style="width:100%">Fermer</button>`; sheet.querySelector('#pm-close').onclick = close; return; }
+    const draft = new Map(d.features.map((f) => [f.key, f.effective]));
+    const orig = new Map(d.features.map((f) => [f.key, f.override]));
+    const wanted = (f) => (draft.get(f.key) === f.default ? null : draft.get(f.key));   // exception to store (null = role default)
+    const groups = [...new Set(d.features.map((f) => f.group))];
+    const draw = () => {
+      sheet.innerHTML = `
+        <h2 style="margin-top:0">Droits de ${escapeHtml(d.user.login)}</h2>
+        <div class="muted" style="margin-bottom:8px">Rôle : ${escapeHtml(d.user.fonction)} · les cases suivent le rôle tant que vous ne les changez pas. Une modification est appliquée en quelques secondes.</div>
+        ${groups.map((g) => `<h3 style="margin:12px 0 4px">${escapeHtml(g)}</h3>${d.features.filter((f) => f.group === g).map((f) => {
+          const on = draft.get(f.key); const w = wanted(f);
+          return `<label class="line-item" style="align-items:center;gap:10px;cursor:pointer"><span class="line-name" style="min-width:0">${escapeHtml(f.label)}<br><span class="muted">${w == null ? 'comme le rôle' : (w ? 'autorisé (exception)' : 'refusé (exception)')}</span></span><input type="checkbox" data-k="${f.key}" ${on ? 'checked' : ''} style="width:auto;flex:none;transform:scale(1.3)"></label>`; }).join('')}`).join('')}
+        <div id="pm-msg"></div>
+        <button class="primary" id="pm-save" style="width:100%;margin-top:12px">Enregistrer</button>
+        <button class="ghost" id="pm-reset" style="width:100%;margin-top:8px">Tout remettre comme le rôle</button>
+        <button class="ghost" id="pm-close" style="width:100%;margin-top:8px">Fermer</button>`;
+      sheet.querySelectorAll('input[data-k]').forEach((c) => { c.onchange = () => { draft.set(c.dataset.k, c.checked); const y = sheet.scrollTop; draw(); sheet.scrollTop = y; }; });
+      sheet.querySelector('#pm-reset').onclick = () => { d.features.forEach((f) => draft.set(f.key, f.default)); draw(); };
+      sheet.querySelector('#pm-close').onclick = close;
+      sheet.querySelector('#pm-save').onclick = async (ev) => {
+        const overrides = {};
+        d.features.forEach((f) => { const w = wanted(f); if (w !== orig.get(f.key)) overrides[f.key] = w; });
+        const msg = sheet.querySelector('#pm-msg');
+        if (!Object.keys(overrides).length) { msg.innerHTML = '<div class="muted">Aucun changement.</div>'; return; }
+        ev.currentTarget.disabled = true;
+        try { await api(`/permissions/users/${id}`, { method: 'PUT', body: { overrides } }); showToast('Droits enregistrés'); close(); }
+        catch (e) { ev.currentTarget.disabled = false; msg.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+      };
+    };
+    draw();
   }
 
   async function loadUsers() {
@@ -3045,11 +3128,13 @@
             <span class="muted">${escapeHtml(u.fonction)}${u.deleted ? ' · désactivé' : ''}</span>
           </div>
           <span style="display:flex;gap:6px">
+            ${state.canEditPerms ? `<button class="ghost" data-action="perms" data-id="${u.id}" data-login="${escapeHtml(u.login)}" title="Droits d'accès">🔐</button>` : ''}
             <button class="ghost" data-action="reset" data-id="${u.id}" data-login="${escapeHtml(u.login)}">🔑</button>
             <button class="ghost" data-action="toggle" data-id="${u.id}" data-deleted="${u.deleted}">${u.deleted ? '✓' : '✕'}</button>
           </span>
         </div>
       `).join('');
+      box.querySelectorAll('[data-action=perms]').forEach((btn) => { btn.onclick = () => openPermsSheet(Number(btn.dataset.id), btn.dataset.login); });
       box.querySelectorAll('[data-action=reset]').forEach((btn) => {
         btn.onclick = () => resetUserPassword(btn.dataset.id, btn.dataset.login);
       });

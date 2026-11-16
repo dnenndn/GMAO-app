@@ -2,10 +2,10 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { sql, getPool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { ADMIN_ROLES, requireRole } = require('../roles');
+const { requireFeature } = require('../features');
 
 const router = express.Router();
-router.use(requireAuth, requireRole(ADMIN_ROLES));
+router.use(requireAuth, requireFeature('users.admin'));
 
 // List users. Deliberately never selects mot_passe - see the password note
 // in README/BUILD_APK.md for why admins get a reset button, not a viewer.
