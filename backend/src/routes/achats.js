@@ -231,10 +231,10 @@ router.get('/synthese/general', async (req, res) => {
           where bl.statut = 0 and bl.date_reel between @d1 and @d2) x`),
       rq2(pool, q.r).query('select statut, count(*) as nb from demande_achat where date_da between @d1 and @d2 group by statut')
     ]);
-    // one line per famille (the fuel articles of a famille stay in it)
+    // one line per famille; fuel articles get their own GASOIL line so Général matches Par famille
     const byFam = new Map();
     for (const x of ach.recordset) {
-      const k = famName(x); const cur = byFam.get(k) || { famille: k, total_ttc: 0, total_ht: 0 };
+      const k = x.fuel ? 'GASOIL' : famName(x); const cur = byFam.get(k) || { famille: k, total_ttc: 0, total_ht: 0 };
       cur.total_ttc += Number(x.ttc || 0); cur.total_ht += Number(x.ht || 0); byFam.set(k, cur);
     }
     const familles = [...byFam.values()].map((f) => ({ ...f, total_ttc: r3(f.total_ttc), total_ht: r3(f.total_ht) })).sort((a, b) => b.total_ttc - a.total_ttc);
