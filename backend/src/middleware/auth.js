@@ -1,20 +1,18 @@
 const jwt = require('jsonwebtoken');
 const { effectivePerms, defaultPerms } = require('../features');
-const { sql, getPool } = require('../db');
+const { isActive } = require('../appUsers');
 
 // Sliding session: once a token is past half of its life it is replaced by a fresh one (sent in the
 // X-New-Token header, the app stores it), so somebody who uses the app regularly is never logged out.
 // "Remember me" tokens live JWT_REMEMBER_EXPIRES_IN (default 90 days), others JWT_EXPIRES_IN (12 h).
-// A person deleted in the desktop application loses access within a few minutes (checked below).
+// A person deactivated by the administrator loses access within a few minutes (checked below).
 const ACTIVE_TTL = 5 * 60000;
 const activeCache = new Map();   // user id -> { ok, at }
 async function userStillActive(id) {
   const hit = activeCache.get(id);
   if (hit && Date.now() - hit.at < ACTIVE_TTL) return hit.ok;
   try {
-    const pool = await getPool();
-    const r = await pool.request().input('i', sql.Int, id).input('d', sql.Bit, false).query('select 1 as x from utilisateur where id = @i and deleted = @d');
-    const ok = r.recordset.length > 0;
+    const ok = await isActive(id);
     activeCache.set(id, { ok, at: Date.now() });
     return ok;
   } catch (e) { return true; }     // database hiccup: do not lock everybody out
@@ -33,7 +31,7 @@ async function requireAuth(req, res, next) {
   } catch (err) {
     return res.status(401).json({ error: 'Session expired or invalid. Log in again.' });
   }
-  if (req.user.rem && !(await userStillActive(req.user.id))) {
+  if (!(await userStillActive(req.user.id))) {
     return res.status(401).json({ error: 'Session expired or invalid. Log in again.' });
   }
   const now = Math.floor(Date.now() / 1000);
@@ -47,4 +45,6 @@ async function requireAuth(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth };
+function forgetActive(id) { activeCache.delete(id); }
+
+module.exports = { requireAuth, forgetActive };

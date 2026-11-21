@@ -1626,6 +1626,7 @@
     try { localStorage.setItem('gmao_remember', remember ? '1' : '0'); } catch (e) { /* ignore */ }
     try {
       const data = await api('/auth/login', { method: 'POST', body: { login, password, remember } });
+      if (data.first_login) { renderFirstLogin(data.login || login, remember); return; }
       state.token = data.token;
       state.user = data.user;
       state.perms = data.permissions || null;
@@ -1635,6 +1636,38 @@
     } catch (e) {
       errBox.textContent = e.message;
     }
+  }
+
+  // First connection: the administrator created the account without a password, the person chooses it.
+  function renderFirstLogin(login, remember) {
+    app.innerHTML = `
+      <main style="padding-top:60px">
+        <div class="card">
+          <h1>Bienvenue ${escapeHtml(login)}</h1>
+          <p class="muted">C'est votre première connexion : choisissez votre mot de passe (6 caractères minimum). Vous l'utiliserez ensuite à chaque connexion.</p>
+          <label>Nouveau mot de passe</label>
+          <input id="fl-pw1" type="password" autocomplete="new-password" />
+          <label>Confirmer le mot de passe</label>
+          <input id="fl-pw2" type="password" autocomplete="new-password" />
+          <button class="primary" id="fl-save">Enregistrer et me connecter</button>
+          <button class="ghost" id="fl-back" style="margin-top:8px">Retour</button>
+          <div class="error" id="fl-error"></div>
+        </div>
+      </main>`;
+    document.getElementById('fl-back').onclick = renderLogin;
+    const go = async () => {
+      const err = document.getElementById('fl-error'); err.textContent = '';
+      const p1 = document.getElementById('fl-pw1').value; const p2 = document.getElementById('fl-pw2').value;
+      if (p1.length < 6) { err.textContent = 'Au moins 6 caractères.'; return; }
+      if (p1 !== p2) { err.textContent = 'Les deux mots de passe sont différents.'; return; }
+      try {
+        const data = await api('/auth/set-password', { method: 'POST', body: { login, password: p1, remember } });
+        state.token = data.token; state.user = data.user; state.perms = data.permissions || null;
+        saveSession(); render(); registerPushNotifications();
+      } catch (e) { err.textContent = e.message; }
+    };
+    document.getElementById('fl-save').onclick = go;
+    document.getElementById('fl-pw2').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
   }
 
   // ---- Accueil (home) ---------------------------------------------------
@@ -3494,31 +3527,66 @@
     const main = document.getElementById('main');
     main.innerHTML = `
       <div class="card">
-        <h2>Nouvel utilisateur</h2>
-        <label>Identifiant</label>
-        <input id="new-login" />
-        <label>Mot de passe</label>
-        <input id="new-password" type="password" />
-        <label>Rôle</label>
-        <select id="new-fonction">
-          <option>Administrateur</option>
-          <option>Responsable Méthode</option>
-          <option>Responsable Magasin</option>
-          <option>Responsable Achat</option>
-          <option>Magasinier</option>
-          <option>Technicien</option>
-        </select>
-        <button class="primary" id="create-user">Créer</button>
-        <div class="error" id="create-user-error"></div>
+        <h2>Ajouter un utilisateur</h2>
+        <p class="muted">Un nouvel utilisateur n'a pas de mot de passe : il le choisit à sa première connexion.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="primary" id="user-import" style="flex:1">Importer du logiciel</button>
+          <button class="ghost" id="user-new" style="flex:1">Créer un nouveau</button>
+        </div>
       </div>
       <div class="card">
         <h2>Utilisateurs</h2>
         <div id="users-list"><div class="empty">Chargement…</div></div>
       </div>
     `;
-    document.getElementById('create-user').onclick = createUser;
+    document.getElementById('user-new').onclick = openNewUserSheet;
+    document.getElementById('user-import').onclick = openImportSheet;
     await loadPerms();
     loadUsers();
+  }
+
+  async function openNewUserSheet() {
+    let roles = [];
+    try { roles = await api('/admin/roles', { fresh: true }); } catch (e) { showToast(e.message, true); return; }
+    const { sheet, close } = openSheet(`
+      <h2>Nouvel utilisateur</h2>
+      <label>Identifiant</label><input id="nu-login" autocapitalize="none" autocomplete="off" />
+      <label>Rôle</label><select id="nu-fonction">${roles.map((r) => `<option>${escapeHtml(r)}</option>`).join('')}</select>
+      <button class="primary" id="nu-save" style="margin-top:10px">Créer</button>
+      <div class="error" id="nu-error"></div>`);
+    sheet.querySelector('#nu-save').onclick = async () => {
+      const err = sheet.querySelector('#nu-error'); err.textContent = '';
+      const login = sheet.querySelector('#nu-login').value.trim(); const fonction = sheet.querySelector('#nu-fonction').value;
+      if (!login) { err.textContent = 'Identifiant requis.'; return; }
+      try { await api('/admin/users', { method: 'POST', body: { login, fonction } }); close(); showToast('✓ Utilisateur créé'); renderUsers(); }
+      catch (e) { err.textContent = e.message; }
+    };
+  }
+
+  async function openImportSheet() {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    let list = [];
+    try { list = await api('/admin/desktop-users', { fresh: true }); } catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; return; }
+    if (!list.length) { sheet.innerHTML = '<h2>Importer du logiciel</h2><div class="empty">Tout le monde est déjà dans l\'application.</div>'; return; }
+    sheet.innerHTML = `
+      <h2>Importer du logiciel</h2>
+      <p class="muted">Choisissez les personnes du logiciel de bureau à ajouter. Elles définiront leur mot de passe à leur première connexion dans l'application.</p>
+      <label style="display:flex;gap:8px;align-items:center;font-weight:600"><input type="checkbox" id="imp-all" style="width:auto" /> Tout sélectionner</label>
+      <div style="max-height:45vh;overflow:auto">
+        ${list.map((u) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;padding:6px 0"><input type="checkbox" class="imp-one" data-id="${u.id}" style="width:auto" /> <span>${escapeHtml(u.login)} <span class="muted">· ${escapeHtml(u.fonction)}</span></span></label>`).join('')}
+      </div>
+      <button class="primary" id="imp-go" style="margin-top:10px">Importer</button>
+      <div class="error" id="imp-error"></div>`;
+    sheet.querySelector('#imp-all').onchange = (e) => sheet.querySelectorAll('.imp-one').forEach((c) => { c.checked = e.target.checked; });
+    sheet.querySelector('#imp-go').onclick = async () => {
+      const ids = [...sheet.querySelectorAll('.imp-one:checked')].map((c) => Number(c.dataset.id));
+      const err = sheet.querySelector('#imp-error'); err.textContent = '';
+      if (!ids.length) { err.textContent = 'Choisissez au moins une personne.'; return; }
+      try {
+        const r = await api('/admin/users/import', { method: 'POST', body: { ids } });
+        close(); showToast(`✓ ${r.added} utilisateur(s) importé(s)${r.skipped.length ? ` · ignorés : ${r.skipped.join(', ')}` : ''}`); renderUsers();
+      } catch (e) { err.textContent = e.message; }
+    };
   }
 
   // Administrator screen: tick / untick every feature for one user.
@@ -3566,11 +3634,11 @@
         <div class="line-item">
           <div class="line-name">
             ${escapeHtml(u.login)}<br>
-            <span class="muted">${escapeHtml(u.fonction)}${u.deleted ? ' · désactivé' : ''}</span>
+            <span class="muted">${escapeHtml(u.fonction)}${u.deleted ? ' · désactivé' : (u.has_password ? '' : ' · mot de passe à définir')}</span>
           </div>
           <span style="display:flex;gap:6px">
             ${state.canEditPerms ? `<button class="ghost" data-action="perms" data-id="${u.id}" data-login="${escapeHtml(u.login)}" title="Droits d'accès">🔐</button>` : ''}
-            <button class="ghost" data-action="reset" data-id="${u.id}" data-login="${escapeHtml(u.login)}">🔑</button>
+            <button class="ghost" data-action="reset" data-id="${u.id}" data-login="${escapeHtml(u.login)}" title="Réinitialiser le mot de passe">🔑</button>
             <button class="ghost" data-action="toggle" data-id="${u.id}" data-deleted="${u.deleted}">${u.deleted ? '✓' : '✕'}</button>
           </span>
         </div>
@@ -3587,28 +3655,12 @@
     }
   }
 
-  async function createUser() {
-    const errBox = document.getElementById('create-user-error');
-    errBox.textContent = '';
-    const login = document.getElementById('new-login').value.trim();
-    const password = document.getElementById('new-password').value;
-    const fonction = document.getElementById('new-fonction').value;
-    if (!login || !password) { errBox.textContent = 'Identifiant et mot de passe requis.'; return; }
-    try {
-      await api('/admin/users', { method: 'POST', body: { login, password, fonction } });
-      showToast('✓ Utilisateur créé');
-      renderUsers();
-    } catch (e) {
-      errBox.textContent = e.message;
-    }
-  }
-
   async function resetUserPassword(id, login) {
-    const newPassword = prompt(`Nouveau mot de passe pour ${login} :`);
-    if (!newPassword) return;
+    if (!confirm(`Réinitialiser le mot de passe de ${login} ?\nIl choisira un nouveau mot de passe à sa prochaine connexion.`)) return;
     try {
-      await api(`/admin/users/${id}/reset-password`, { method: 'POST', body: { new_password: newPassword } });
-      showToast('✓ Mot de passe réinitialisé');
+      await api(`/admin/users/${id}/reset-password`, { method: 'POST' });
+      showToast('✓ Mot de passe supprimé : à redéfinir à la prochaine connexion');
+      loadUsers();
     } catch (e) {
       showToast(e.message, true);
     }
@@ -3616,10 +3668,7 @@
 
   async function toggleUser(id, currentlyDeleted) {
     try {
-      const users = await api('/admin/users');
-      const u = users.find((x) => x.id === Number(id));
-      if (!u) return;
-      await api(`/admin/users/${id}`, { method: 'PUT', body: { login: u.login, fonction: u.fonction, deleted: !currentlyDeleted } });
+      await api(`/admin/users/${id}`, { method: 'PUT', body: { active: !!currentlyDeleted } });
       showToast('✓ Statut mis à jour');
       renderUsers();
     } catch (e) {

@@ -121,7 +121,22 @@ Logs: `backend\logs\backend.log`. Remove it with `uninstall-autostart.bat`. Clos
 
 `sql/05_di_photos.sql` (DI photos), `sql/06_engin_seuil.sql` (per-engine fuel alert threshold),
 `sql/07_user_permissions.sql` (per-user feature permissions), `sql/08_ot_notes.sql` (OT notes and closing requests),
-`sql/09_client_ref.sql` (protects against a BSM / DI sent twice by the offline queue).
+`sql/09_client_ref.sql` (protects against a BSM / DI sent twice by the offline queue),
+`sql/10_cuve_controle.sql` (tank checks), `sql/11_app_users.sql` (the app's own users).
+
+## The app's own users
+
+Only people listed in `GMAO_APP.app_user` can log in to the app, each with his own password (hashed). The desktop
+passwords are no longer used by the app.
+
+1. Run `sql/11_app_users.sql`, then create the first administrator (from the `backend` folder):
+   `node src/scripts/create-admin.js marwen <password>` (links to the desktop user `marwen` if it exists, else creates a placeholder).
+2. Log in, open *Utilisateurs*: **Importer du logiciel** brings people from the desktop database (tick them, or *Tout sélectionner*);
+   **Créer un nouveau** adds somebody who is not in the desktop software (a placeholder row with a random password is added to
+   `utilisateur` so his id exists everywhere; it cannot be used to open the desktop application).
+3. Imported / new users have no password: at the first connection they type their login, leave the password empty, tap
+   *Se connecter* and choose their password. 🔑 removes a password (the person chooses a new one at next connection); ✕ deactivates the account
+   (the session stops within 5 minutes).
 
 ## Permissions per user
 

@@ -30,8 +30,8 @@ router.get('/me', (req, res) => {
 
 router.get('/users', requireEditor, async (_req, res) => {
   try {
-    const pool = await getPool();
-    const r = await pool.request().input('d', sql.Bit, false).query('select id, login, fonction from utilisateur where deleted = @d order by login');
+    const app0 = await getAppPool();
+    const r = await app0.request().query('select desktop_id as id, login, fonction from app_user where actif = 1 order by login');
     res.json(r.recordset.map((u) => ({ id: u.id, login: (u.login || '').trim(), fonction: (u.fonction || '').trim() })));
   } catch (err) {
     console.error('permissions users error:', err);
@@ -40,8 +40,8 @@ router.get('/users', requireEditor, async (_req, res) => {
 });
 
 async function loadUser(id) {
-  const pool = await getPool();
-  const r = await pool.request().input('i', sql.Int, id).input('d', sql.Bit, false).query('select id, login, fonction from utilisateur where id = @i and deleted = @d');
+  const app0 = await getAppPool();
+  const r = await app0.request().input('i', sql.Int, id).query('select desktop_id as id, login, fonction from app_user where desktop_id = @i and actif = 1');
   return r.recordset[0] ? { id: r.recordset[0].id, login: (r.recordset[0].login || '').trim(), fonction: (r.recordset[0].fonction || '').trim() } : null;
 }
 
