@@ -72,4 +72,43 @@ router.get('/engins/:id/fiche', requireFeature('parc.view'), async (req, res) =>
   }
 });
 
+// "Charge totale par engin" (like the desktop report, but with the period applied to the parts):
+// fuel issued + spare parts issued by BSM (the cost of a BSM listing several equipments is split
+// between them) + papers bought in the period (insurance, vignette, visite technique).
+router.get('/charge', requireFeature('money.view'), async (req, res) => {
+  const p = period(req, 30);
+  if (p.error) return res.status(400).json({ error: p.error });
+  try {
+    const pool = await getPool();
+    const rq = () => pool.request().input('d', sql.Int, 0).input('d1', sql.Date, p.from).input('d2', sql.Date, p.to);
+    const [eng, fuel, parts, papers] = await Promise.all([
+      rq().query(`select e.id, e.designation, e.matricule, v.designation as vehicule from engins e left join type_de_vehicule v on e.id_vehicule = v.id where e.deleted = @d`),
+      rq().query(`select id_engin, sum(quantite) as litres, sum(prix_ttc) as montant from engin_sortie_carburant where date between @d1 and @d2 and deleted = @d group by id_engin`),
+      rq().query(`select e.id as id_engin, sum(ba.quantite * ba.prix_ht / n.nb) as montant
+        from engins e inner join bsm_equipement be on be.id_equipement = e.liaison
+        inner join (select id_bsm, count(*) as nb from bsm_equipement group by id_bsm) n on n.id_bsm = be.id_bsm
+        inner join bsm b on b.id = be.id_bsm inner join bsm_article ba on ba.id_bsm = b.id
+        where e.deleted = @d and b.date_bsm between @d1 and @d2 and ba.quantite <> 0 group by e.id`),
+      rq().query(`select id_engin, sum(prix) as montant from (
+          select id_engin, prix from engins_assurance where deleted = @d and date_deb between @d1 and @d2
+          union all select id_engin, prix from engins_vignette where deleted = @d and date_deb between @d1 and @d2
+          union all select id_engin, prix from engins_visite_technique where deleted = @d and date_deb between @d1 and @d2) x group by id_engin`)
+    ]);
+    const m = (rs, key = 'montant') => new Map(rs.recordset.map((x) => [x.id_engin, Number(x[key] || 0)]));
+    const fu = m(fuel), li = m(fuel, 'litres'), pa = m(parts), pp = m(papers);
+    const r3 = (x) => Math.round(x * 1000) / 1000;
+    const engins = eng.recordset.map((e) => {
+      const carburant = fu.get(e.id) || 0, pieces = pa.get(e.id) || 0, papiers = pp.get(e.id) || 0;
+      return { id_engin: e.id, engin: (e.designation || '').trim(), matricule: (e.matricule || '').trim(), vehicule: (e.vehicule || '').trim(),
+        litres: r3(li.get(e.id) || 0), carburant: r3(carburant), pieces: r3(pieces), papiers: r3(papiers), total: r3(carburant + pieces + papiers) };
+    }).filter((x) => x.total > 0).sort((a, b) => b.total - a.total);
+    engins.forEach((x, i) => { x.rang = i + 1; });
+    const sum = (k) => r3(engins.reduce((s, x) => s + x[k], 0));
+    res.json({ from: iso(p.from), to: iso(p.to), engins, totaux: { carburant: sum('carburant'), pieces: sum('pieces'), papiers: sum('papiers'), total: sum('total') } });
+  } catch (err) {
+    console.error('parc charge error:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;

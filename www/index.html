@@ -938,7 +938,7 @@
     if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
-    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
+    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -954,7 +954,7 @@
     maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
-    parc: [['conso', 'Consommation', null], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
+    parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
   function renderHub(tab, renderers) {
@@ -963,7 +963,7 @@
     const main = document.getElementById('main');
     main.innerHTML = (items.length > 1 ? `
       <div class="card" style="padding:10px">
-        <div class="segmented" id="hub-nav" style="margin-top:0">
+        <div class="segmented" id="hub-nav" style="margin-top:0${items.length > 4 ? ";flex-wrap:wrap;gap:4px" : ""}">
           ${items.map((i) => `<button data-v="${i[0]}" class="${i[0] === state.sub[tab] ? 'selected' : ''}">${i[1]}</button>`).join('')}
         </div>
       </div>` : '') + '<div id="sub-body"></div>';
@@ -2189,6 +2189,39 @@
       else { from = new Date(now); from.setDate(from.getDate() - 30); }
       P.from = isoDate(from); P.to = isoDate(to); f.value = P.from; t.value = P.to; reload();
     }; });
+  }
+
+  // Charge totale per engine: fuel + parts + papers over the period (money roles).
+  async function renderParcCharge(root) {
+    root.innerHTML = parcPeriodCard() + '<div id="parc-body"><div class="card"><div class="empty">Chargement…</div></div></div>';
+    const load = async () => {
+      const box = document.getElementById('parc-body'); if (!box) return;
+      const P = parcPeriod();
+      try {
+        const d = await api(`/parc/charge?from=${P.from}&to=${P.to}`, { fresh: true });
+        if (!d.engins.length) { box.innerHTML = '<div class="card"><div class="empty">Aucune charge sur cette période</div></div>'; return; }
+        const T = d.totaux, max = d.engins[0].total;
+        const pct = (x) => (T.total > 0 ? (x / T.total * 100).toFixed(0) + ' %' : '');
+        box.innerHTML = `
+          <div class="card"><strong>${fmtMoney0(T.total)}</strong>
+            <div class="muted">Carburant ${fmtMoney0(T.carburant)} (${pct(T.carburant)}) · Pièces ${fmtMoney0(T.pieces)} (${pct(T.pieces)}) · Papiers ${fmtMoney0(T.papiers)} (${pct(T.papiers)})</div>
+            <div class="muted">${d.engins.length} engin(s) · du ${frDate(d.from)} au ${frDate(d.to)}</div></div>
+          <div class="card">${d.engins.map((e) => `
+            <div class="article-row" data-e="${e.id_engin}" style="cursor:pointer;align-items:flex-start">
+              <div style="min-width:0;flex:1">
+                <div class="name">${e.rang}. ${escapeHtml(e.engin)} ${e.matricule ? '· ' + escapeHtml(e.matricule) : ''}</div>
+                <div style="display:flex;height:5px;margin:3px 0;background:var(--line);border-radius:3px;overflow:hidden;width:${Math.max(3, Math.round(e.total / max * 100))}%">
+                  <div style="width:${e.carburant / e.total * 100}%;background:var(--accent)"></div><div style="width:${e.pieces / e.total * 100}%;background:var(--ink, #333)"></div><div style="width:${e.papiers / e.total * 100}%;background:#999"></div></div>
+                <div class="code">Carburant ${fmtMoney0(e.carburant)} · Pièces ${fmtMoney0(e.pieces)} · Papiers ${fmtMoney0(e.papiers)}</div>
+              </div>
+              <div style="text-align:right;white-space:nowrap;flex-shrink:0;padding-left:8px"><strong>${fmtMoney0(e.total)}</strong><div class="muted">${pct(e.total)}</div></div>
+            </div>`).join('')}</div>
+          <div class="muted" style="padding:4px 4px 12px">Carburant : montant saisi au bureau. Pièces : sorties magasin (BSM) liées à l'engin, au prix HT. Papiers : assurance, vignette et visite dont le début tombe dans la période.</div>`;
+        box.querySelectorAll('[data-e]').forEach((r) => { r.onclick = () => openEnginSheet(Number(r.dataset.e)); });
+      } catch (e) { box.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; }
+    };
+    wireParcPeriod(load);
+    load();
   }
 
   async function renderParcConso(root) {
