@@ -20,6 +20,7 @@ router.use((req, res, next) => {
 const CMD_STATUS = { 0: 'En attente', 1: 'En cours', 5: 'Annulée', 10: 'Clôturée' };
 const CMD_FILTER = { attente: 0, encours: 1, annulee: 5, cloturee: 10 };
 const dateText = (v) => (v instanceof Date ? iso(v) : v ? String(v).slice(0, 10) : null);
+const str = (v) => (v == null ? '' : String(v)).trim();   // some desktop columns are numeric
 const money = (x) => Math.round(Number(x || 0) * 1000) / 1000;
 
 router.get('/commandes', async (req, res) => {
@@ -45,8 +46,8 @@ router.get('/commandes', async (req, res) => {
       order by c.date_commande desc, c.id desc`);
     res.json({
       from: iso(p.from), to: iso(p.to),
-      commandes: r.recordset.map((c) => ({ id: c.id, numero: (c.n_commande || '').trim(), date: dateText(c.date_commande), statut: c.statut,
-        statut_label: CMD_STATUS[c.statut] || String(c.statut), urgence: (c.urgence || '').trim(), fournisseur: (c.fournisseur || '').trim(), montant: money(c.montant) }))
+      commandes: r.recordset.map((c) => ({ id: c.id, numero: str(c.n_commande), date: dateText(c.date_commande), statut: c.statut,
+        statut_label: CMD_STATUS[c.statut] || String(c.statut), urgence: str(c.urgence), fournisseur: str(c.fournisseur), montant: money(c.montant) }))
     });
   } catch (err) {
     console.error('achats commandes error:', err);
@@ -65,7 +66,7 @@ router.get('/commandes/:id', async (req, res) => {
       inner join da_article da on ca.id_da_article = da.id
       inner join article a on da.id_article = a.id
       where ca.id_commande = @id order by a.designation`);
-    res.json({ lignes: r.recordset.map((l) => ({ code: (l.code_article || '').trim(), designation: (l.designation || '').trim(),
+    res.json({ lignes: r.recordset.map((l) => ({ code: str(l.code_article), designation: str(l.designation),
       quantite: Number(l.qt_commande), prix_ht: money(l.prix_ht), remise: Number(l.remise || 0),
       total: money(l.qt_commande * l.prix_ht * (1 - Number(l.remise || 0) / 100)) })) });
   } catch (err) {
@@ -87,16 +88,17 @@ router.get('/bl', async (req, res) => {
       select top 200 bl.id, bl.date_reel, bl.bl_fournisseur, bl.statut, fo.nom as fournisseur,
              sum(la.qt * la.prix_ht * (1 - isnull(la.remise, 0) / 100.0)) as montant
       from bon_livraison bl
-      inner join reception re on bl.id_reception = re.id
-      inner join fournisseur fo on re.id_fournisseur = fo.id
+      outer apply (select top 1 c.id_fournisseur from reception_commande rc inner join commande c on rc.id_commande = c.id
+                   where rc.id_reception = bl.id_reception) rcf
+      inner join fournisseur fo on rcf.id_fournisseur = fo.id
       left join livraison_article la on la.id_livraison = bl.id
       ${where}
       group by bl.id, bl.date_reel, bl.bl_fournisseur, bl.statut, fo.nom
       order by bl.date_reel desc, bl.id desc`);
     res.json({
       from: iso(p.from), to: iso(p.to),
-      bl: r.recordset.map((b) => ({ id: b.id, date: dateText(b.date_reel), numero: (b.bl_fournisseur || '').trim(), facture: b.statut === 1,
-        fournisseur: (b.fournisseur || '').trim(), montant: money(b.montant) }))
+      bl: r.recordset.map((b) => ({ id: b.id, date: dateText(b.date_reel), numero: str(b.bl_fournisseur), facture: b.statut === 1,
+        fournisseur: str(b.fournisseur), montant: money(b.montant) }))
     });
   } catch (err) {
     console.error('achats bl error:', err);
@@ -121,8 +123,8 @@ router.get('/factures', async (req, res) => {
       order by fa.date_reel desc, fa.id desc`);
     res.json({
       from: iso(p.from), to: iso(p.to),
-      factures: r.recordset.map((x) => ({ id: x.id, numero: (x.n_facture || '').trim(), date: dateText(x.date_reel),
-        fournisseur: (x.fournisseur || '').trim(), montant_ht: money(x.montant) })),
+      factures: r.recordset.map((x) => ({ id: x.id, numero: str(x.n_facture), date: dateText(x.date_reel),
+        fournisseur: str(x.fournisseur), montant_ht: money(x.montant) })),
       total_ht: money(r.recordset.reduce((s, x) => s + Number(x.montant || 0), 0))
     });
   } catch (err) {
