@@ -1,6 +1,7 @@
 const { sql, getPool } = require('./db');
 const { getAppPool } = require('./appDb');
 const { notifyRoles } = require('./push');
+const { loadPapiers } = require('./parcPapiers');
 
 // Daily digest alerts (one push per kind per day, not one per item):
 //  - engine paperwork (assurance / vignette / visite technique) expiring soon
@@ -8,7 +9,7 @@ const { notifyRoles } = require('./push');
 //  - preventive maintenance due today or overdue
 // Dedup in app_notification_log (type + id_ref = YYYYMMDD) - nothing written to GMAO_NGES.
 const DAYS = Number(process.env.PAPERWORK_ALERT_DAYS || 15);
-const R_PARC = (process.env.PAPERWORK_ALERT_ROLES || 'Administrateur,Responsable Méthode,Responsable Magasin').split(',').map((s) => s.trim()).filter(Boolean);
+const R_PARC = (process.env.PAPERWORK_ALERT_ROLES || 'Administrateur,Responsable Méthode,Responsable Magasin,Responsable Achat,Employé Parc').split(',').map((s) => s.trim()).filter(Boolean);
 const R_STOCK = (process.env.STOCK_ALERT_ROLES || 'Administrateur,Responsable Méthode,Responsable Magasin,Responsable Achat').split(',').map((s) => s.trim()).filter(Boolean);
 const R_PREV = (process.env.PREVENTIVE_ALERT_ROLES || 'Administrateur,Responsable Méthode,Responsable Technique,Responsable Maintenance').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -28,18 +29,11 @@ async function checkDailyAlerts(now = new Date()) {
   let sent = 0;
 
   if (!(await alreadySent('paperwork_alert', key))) {
-    const rows = await run(`
-      select e.designation, e.matricule, x.kind, x.date_exp from engins e inner join (
-        select id_engin, 'Assurance' as kind, max(date_exp) as date_exp from engins_assurance where deleted = @d group by id_engin
-        union all select id_engin, 'Vignette', max(date_exp) from engins_vignette where deleted = @d group by id_engin
-        union all select id_engin, 'Visite technique', max(date_exp) from engins_visite_technique where deleted = @d group by id_engin
-      ) x on x.id_engin = e.id
-      where e.deleted = @d and x.date_exp <= dateadd(day, @n, cast(getdate() as date))
-      order by x.date_exp`);
+    const rows = (await loadPapiers(pool, DAYS)).filter((x) => x.etat === 'expire' || x.etat === 'bientot');
     if (rows.length) {
-      const late = rows.filter((r) => new Date(r.date_exp) < new Date(now.toISOString().slice(0, 10))).length;
+      const late = rows.filter((r) => r.etat === 'expire').length;
       await notifyRoles(R_PARC, { type: 'paperwork_alert', idRef: key, title: 'Papiers engins à renouveler',
-        body: `${rows.length} document(s) expirent sous ${DAYS} jours${late ? ` dont ${late} déjà expiré(s)` : ''}.` });
+        body: `${rows.length} document(s) arrivent à échéance (préavis de chaque papier)${late ? ` dont ${late} déjà expiré(s)` : ''}.` });
       sent++;
     }
   }

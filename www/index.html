@@ -1362,7 +1362,7 @@
           </table>
           <table style="${TBL};margin-top:12px"><tr><td style="${TD};font-weight:700">TOTAL ACHATS</td><td style="${TD};text-align:right;font-weight:700">${fmtMoney(d.total_achats)}</td></tr>
             <tr><td style="${TD};font-weight:700">TOTAL CONSOMMATION</td><td style="${TD};text-align:right;font-weight:700">${fmtMoney(d.total_consommation)}</td></tr></table>
-          <div class="muted" style="margin-top:8px">Achats en TTC. Consommation : sorties magasin (BSM) au prix HT ; gasoil : sorties carburant des engins. Touchez une catégorie pour le détail.</div>${shareBtn()}`;
+          <div class="muted" style="margin-top:8px">Achats en TTC. Consommation : sorties magasin (BSM) au prix HT ; gasoil : sorties carburant des engins (montant tel que saisi au bureau). Touchez une catégorie pour le détail.</div>${shareBtn()}`;
         box.querySelector('#sy-share').onclick = () => shareTablePng('ÉTAT ACHATS MOIS ' + monthTitle(S.month), ['Catégorie', 'QTÉ', 'MONTANT'],
           d.categories.flatMap((c) => [[c.label + ' · ACHAT', q(c.achat.qte), fmtMoney(c.achat.montant)], ['   CONSOMMATION', q(c.consommation.qte), fmtMoney(c.consommation.montant)]]),
           [['TOTAL ACHATS', '', fmtMoney(d.total_achats)], ['TOTAL CONSOMMATION', '', fmtMoney(d.total_consommation)]]).catch((e) => { if (e.name !== 'AbortError') showToast(e.message, true); });
@@ -2200,7 +2200,7 @@
         const d = await api(`/carburant/engins?from=${P.from}&to=${P.to}`);
         if (d.engins.length === 0) { box.innerHTML = '<div class="card"><div class="empty">Aucune sortie de carburant sur cette période</div></div>'; return; }
         box.innerHTML = `
-          <div class="card"><strong>${fmtL(d.total_litres)}</strong> · ${fmtMoney(d.total_cout)} TTC
+          <div class="card"><strong>${fmtL(d.total_litres)}</strong> · ${fmtMoney(d.total_cout)}
             <div class="muted">${d.engins.length} engin(s) · du ${frDate(d.from)} au ${frDate(d.to)}</div></div>
           <div class="card">${d.engins.map((e) => `
             <div class="article-row" data-e="${e.id_engin}" style="cursor:pointer">
@@ -2221,6 +2221,18 @@
     load();
   }
 
+  function enginFicheHtml(f) {
+    const chip = (txt, bad) => `<span class="stock-pill ${bad ? 'low' : ''}" style="margin:2px 4px 2px 0;display:inline-block">${txt}</span>`;
+    const papers = f.papiers.length ? f.papiers.map((x) => chip(`${escapeHtml(x.type)} : ${x.etat === 'expire' ? `expiré (${-x.jours} j)` : frDate(x.date_exp)}`, x.etat === 'expire' || x.etat === 'bientot')).join('') : '<span class="muted">Aucun papier enregistré</span>';
+    const cpt = f.compteurs.map((c) => { const pct = c.lancement > 0 ? Math.min(100, Math.round(c.valeur / c.lancement * 100)) : 0;
+      return `<div style="margin:4px 0"><div style="display:flex;justify-content:space-between;font-size:0.85rem"><span>${escapeHtml(c.nom)}</span><span>reste ${fmtQty(c.restant)} / ${fmtQty(c.lancement)}</span></div><div style="height:6px;background:var(--line);border-radius:3px"><div style="height:6px;width:${pct}%;background:${pct >= 90 ? 'var(--danger, #b3261e)' : 'var(--accent)'};border-radius:3px"></div></div></div>`; }).join('');
+    return `<div class="muted">${[f.vehicule, f.marque, f.num_carte && 'carte ' + f.num_carte, f.chauffeur && 'chauffeur ' + f.chauffeur, f.categorie].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+      <h3 style="margin:10px 0 4px">Papiers</h3>${papers}
+      ${f.lie_equipement ? `<h3 style="margin:10px 0 4px">Maintenance</h3>
+        <div>${chip(`DI ouvertes : ${f.di.ouvertes}`, f.di.ouvertes > 0)}${chip(`OT ouverts : ${f.ot.ouverts}`, false)}${f.pieces.montant != null ? chip(`Pièces ${frDate(f.from)} → ${frDate(f.to)} : ${fmtMoney0(f.pieces.montant)}`, false) : chip(`Lignes de pièces : ${f.pieces.lignes}`, false)}</div>
+        ${cpt ? `<div style="margin-top:6px"><span class="muted">Compteurs préventifs</span>${cpt}</div>` : ''}` : '<div class="muted" style="margin-top:8px">Cet engin n\'est pas lié à un équipement : pas de données de maintenance.</div>'}`;
+  }
+
   const SEUILS = [['def', 'Par défaut (+50 %)'], ['1.2', '+20 % (très sensible)'], ['1.3', '+30 %'], ['1.75', '+75 %'], ['2', '+100 %'], ['off', 'Alertes désactivées']];
   const seuilValue = (s) => (s.actif === false ? 'off' : s.ratio ? String(s.ratio) : 'def');
   const canSetSeuil = () => can('parc.seuils');
@@ -2234,16 +2246,18 @@
     const close = () => overlay.remove();
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
     try {
-      const d = await api(`/carburant/engins/${idEngin}?from=${P.from}&to=${P.to}`);
+      const [d, fiche] = await Promise.all([api(`/carburant/engins/${idEngin}?from=${P.from}&to=${P.to}`), api(`/parc/engins/${idEngin}/fiche?from=${P.from}&to=${P.to}`).catch(() => null)]);
       const litres = d.sorties.reduce((s, x) => s + x.quantite, 0);
       sheet.innerHTML = `
         <h2 style="margin-top:0">${escapeHtml(d.engin)} ${d.matricule ? '· ' + escapeHtml(d.matricule) : ''}</h2>
+        ${fiche && Array.isArray(fiche.papiers) ? enginFicheHtml(fiche) : ''}
+        <h3 style="margin:12px 0 4px">Carburant</h3>
         <div class="muted" style="margin-bottom:8px">${escapeHtml(d.vehicule)} · ${frDate(d.from)} → ${frDate(d.to)} · ${d.sorties.length} sortie(s) · ${fmtL(litres)}</div>
         ${d.sorties.map((x) => `
           <div class="line-item" style="align-items:flex-start">
             <div class="line-name" style="min-width:0">
               <strong>${frDate(x.date)} ${escapeHtml(x.heure || '')}</strong> · ${escapeHtml(x.carburant)}<br>
-              <span class="muted">${x.compteur ? 'compteur ' + fmtQty(x.compteur) : 'sans compteur'}${x.taux != null ? ' · ' + x.taux + ' L/unité' : ''} · ${fmtMoney(x.prix_ttc)} TTC</span>
+              <span class="muted">${x.compteur ? 'compteur ' + fmtQty(x.compteur) : 'sans compteur'}${x.taux != null ? ' · ' + x.taux + ' L/unité' : ''} · ${fmtMoney(x.prix_ttc)}</span>
               ${x.alertes.length || x.sans_compteur ? `<br><span class="stock-pill low" style="white-space:normal;display:inline-block;max-width:100%">⚠ ${escapeHtml(alertLabel({ ...x, alertes: x.sans_compteur ? [...x.alertes, 'compteur'] : x.alertes }))}</span>` : ''}
             </div>
             <strong style="white-space:nowrap;padding-left:8px">${fmtL(x.quantite)}</strong>
@@ -2271,7 +2285,7 @@
         const d = await api(`/carburant/bons?from=${P.from}&to=${P.to}`);
         if (d.bons.length === 0) { box.innerHTML = '<div class="card"><div class="empty">Aucun bon de carburant sur cette période</div></div>'; return; }
         box.innerHTML = `
-          <div class="card"><strong>${fmtL(d.total_litres)}</strong> · ${fmtMoney(d.total_cout)} TTC
+          <div class="card"><strong>${fmtL(d.total_litres)}</strong> · ${fmtMoney(d.total_cout)}
             <div class="muted">${d.bons.length} bon(s)</div></div>
           <div class="card">${d.bons.map((b) => `
             <div class="article-row">
@@ -2288,17 +2302,24 @@
   }
 
   async function renderParcPapiers(root) {
-    root.innerHTML = '<div class="card"><div class="muted">Assurance, vignette et visite technique expirées ou qui expirent dans les 30 prochains jours.</div></div><div id="pp-body" class="card"><div class="empty">Chargement…</div></div>';
+    root.innerHTML = '<div class="card"><div class="muted">Assurance, vignette et visite technique expirées ou proches de leur échéance (préavis de chaque papier, 30 jours si non renseigné).</div></div><div id="pp-body" class="card"><div class="empty">Chargement…</div></div><div id="pp-miss"></div>';
     const box = document.getElementById('pp-body');
     try {
       const d = await api('/parc/papiers?jours=30', { fresh: true });
-      if (!d.papiers.length) { box.innerHTML = '<div class="empty">Tous les papiers sont à jour 👍</div>'; return; }
-      box.innerHTML = d.papiers.map((x) => `
-        <div class="article-row">
+      box.innerHTML = d.papiers.length ? d.papiers.map((x) => `
+        <div class="article-row" data-e="${x.id_engin}" style="cursor:pointer">
           <div style="min-width:0"><div class="name">${escapeHtml(x.engin)} ${x.matricule ? '· ' + escapeHtml(x.matricule) : ''}</div>
           <div class="code">${escapeHtml(x.type)} · ${frDate(x.date_exp)}</div></div>
           ${pill(x.etat === 'expire' ? `Expiré (${-x.jours} j)` : x.jours === 0 ? "Expire aujourd'hui" : `Dans ${x.jours} j`, x.etat === 'expire')}
-        </div>`).join('');
+        </div>`).join('') : '<div class="empty">Tous les papiers sont à jour 👍</div>';
+      box.querySelectorAll('[data-e]').forEach((r) => { r.onclick = () => openEnginSheet(Number(r.dataset.e)); });
+      if (d.manquants && d.manquants.length) {
+        document.getElementById('pp-miss').innerHTML = `<div class="card"><h3 style="margin-top:0">Jamais renseignés (${d.manquants.length} engin(s))</h3>${d.manquants.map((x) => `
+          <div class="article-row" data-e="${x.id_engin}" style="cursor:pointer"><div style="min-width:0"><div class="name">${escapeHtml(x.engin)} ${x.matricule ? '· ' + escapeHtml(x.matricule) : ''}</div>
+          <div class="code">${x.manquants.map(escapeHtml).join(' · ')}</div></div></div>`).join('')}
+          <div class="muted" style="margin-top:6px">Aucun enregistrement dans le logiciel de bureau pour ces papiers.</div></div>`;
+        document.querySelectorAll('#pp-miss [data-e]').forEach((r) => { r.onclick = () => openEnginSheet(Number(r.dataset.e)); });
+      }
     } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
   }
   async function renderParcAlertes(root) {
