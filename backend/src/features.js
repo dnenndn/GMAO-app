@@ -37,6 +37,7 @@ const FEATURES = [
   ['Maintenance', 'di.manage', "Annuler ou réactiver les DI des autres", [...new Set([...R.MANAGER_ROLES, ...R.MAINTENANCE_ROLES])]],
   ['Maintenance', 'ot.update', "Commenter un OT et demander sa clôture", not('DGA')],
   ['Parc', 'parc.view', 'Parc: gasoil, bons, alertes, papiers', ALL],
+  ['Parc', 'parc.cuve', 'Contrôle de cuve carburant (litres mesurés)', ['Administrateur', 'Responsable Méthode', 'Responsable Magasin']],
   ['Parc', 'parc.seuils', "Régler le seuil d'alerte gasoil des engins", ['Administrateur', 'Responsable Méthode', 'Responsable Magasin']],
   ['Général', 'money.view', 'Voir les montants (coûts OT, tableau de bord, valeurs)', R.MONEY_ROLES],
   ['Administration', 'users.admin', 'Gérer les utilisateurs', R.ADMIN_ROLES]

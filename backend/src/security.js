@@ -69,11 +69,12 @@ function securityHeaders(_req, res, next) {
 const DEFAULT_ORIGINS = ['http://localhost', 'https://localhost', 'capacitor://localhost', 'ionic://localhost'];
 function corsOptions() {
   const raw = (process.env.CORS_ORIGIN || '').trim();
-  if (raw === '*') return { origin: '*' };
+  if (raw === '*') return { origin: '*', exposedHeaders: ['X-New-Token'] };
   const allowed = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : DEFAULT_ORIGINS;
   return {
     // No Origin header = not a browser (curl, health checks): allowed, JWT still required.
-    origin: (origin, cb) => cb(null, !origin || allowed.includes(origin))
+    origin: (origin, cb) => cb(null, !origin || allowed.includes(origin)),
+    exposedHeaders: ['X-New-Token']
   };
 }
 

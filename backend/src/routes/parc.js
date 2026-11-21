@@ -4,6 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { iso, period, intParam } = require('../lib');
 const { can, requireFeature } = require('../features');
 const { loadPapiers, loadManquants } = require('../parcPapiers');
+const { loadCompteurs } = require('../preventifCompteur');
 
 // Engine paperwork (assurance, vignette, visite technique) - READ ONLY.
 // For each engine and each kind, the latest expiry date (desktop tables
@@ -45,8 +46,7 @@ router.get('/engins/:id/fiche', requireFeature('parc.view'), async (req, res) =>
       loadPapiers(pool, 30),
       lien == null ? { recordset: [] } : q(`select statut, count(*) as nb from demande_intervention where equipement = @l and deleted = @d group by statut`),
       lien == null ? { recordset: [] } : q(`select statut, count(*) as nb from ordre_travail where equipement = @l and deleted = @d group by statut`),
-      lien == null ? { recordset: [] } : q(`select ec.designation, ec.valeur, pc.valeur_lancement from prev_compteur pc inner join equipement_compteur ec on pc.id_compteur = ec.id
-        where pc.equipement = @l and ec.deleted = @d order by ec.designation`),
+      lien == null ? [] : loadCompteurs(pool, { liaison: lien }),
       lien == null ? { recordset: [] } : q(`select count(*) as nb, sum(ba.quantite * ba.prix_ht) as montant from bsm_equipement be
         inner join bsm b on b.id = be.id_bsm inner join bsm_article ba on ba.id_bsm = b.id
         where be.id_equipement = @l and b.date_bsm between @d1 and @d2 and ba.quantite <> 0`)
@@ -62,8 +62,7 @@ router.get('/engins/:id/fiche', requireFeature('parc.view'), async (req, res) =>
       papiers: paperAll.filter((x) => x.id_engin === id).map((x) => ({ type: x.type, date_exp: x.date_exp, jours: x.jours, etat: x.etat, preavis: x.preavis })),
       di: { ouvertes: diOpen, total: nb(di.recordset, () => true) },
       ot: { ouverts: otOpen, total: nb(ot.recordset, () => true) },
-      compteurs: cpt.recordset.map((c) => ({ nom: (c.designation || '').trim(), valeur: Number(c.valeur || 0), lancement: Number(c.valeur_lancement || 0),
-        restant: Math.max(0, Number(c.valeur_lancement || 0) - Number(c.valeur || 0)) })),
+      compteurs: cpt.map((c) => ({ nom: c.compteur, valeur: c.valeur, lancement: c.seuil, restant: Math.max(0, c.restant), depasse: c.etat === 'depasse', sens: c.sens })),
       pieces: { lignes: Number(pr.nb || 0), ...(money_ok ? { montant: Math.round(Number(pr.montant || 0) * 1000) / 1000 } : {}) }
     });
   } catch (err) {

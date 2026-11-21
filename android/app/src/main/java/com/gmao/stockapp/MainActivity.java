@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // Local plugins must be registered before super.onCreate builds the bridge.
         registerPlugin(NfcUidPlugin.class);
+        registerPlugin(DataUsagePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

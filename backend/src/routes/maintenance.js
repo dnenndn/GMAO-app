@@ -3,6 +3,7 @@ const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { requireAuth } = require('../middleware/auth');
 const { MAINTENANCE_ROLES } = require('../roles');
+const { loadCompteurs } = require('../preventifCompteur');
 const { loginsByIds } = require('../userLookup');
 const { can, requireFeature } = require('../features');
 const { notifyRoles } = require('../push');
@@ -451,6 +452,18 @@ router.post('/ot/:id/note', requireFeature('ot.update'), async (req, res) => {
   } catch (err) {
     console.error('maintenance ot note error:', err);
     res.status(500).json({ error: 'Erreur serveur (la table des notes est-elle créée ? voir sql/08_ot_notes.sql).' });
+  }
+});
+
+// Preventive plans driven by counters (hours / km), whole fleet, closest to their threshold first.
+router.get('/compteurs', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const rows = (await loadCompteurs(pool)).sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1) || a.restant - b.restant);
+    res.json({ compteurs: rows.slice(0, 300), depasses: rows.filter((x) => x.etat === 'depasse').length, proches: rows.filter((x) => x.etat === 'proche').length });
+  } catch (err) {
+    console.error('maintenance compteurs error:', err);
+    res.status(500).json({ error: 'Erreur serveur.' });
   }
 });
 

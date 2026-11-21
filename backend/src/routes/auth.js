@@ -18,6 +18,7 @@ function looksHashed(value) {
 
 router.post('/login', async (req, res) => {
   const { login, password } = req.body || {};
+  const remember = !!(req.body && req.body.remember);
   if (typeof login !== 'string' || typeof password !== 'string' || !login || !password) {
     return res.status(400).json({ error: 'login and password are required' });
   }
@@ -64,9 +65,9 @@ router.post('/login', async (req, res) => {
     const login2 = (user.login || '').trim();
 
     const token = jwt.sign(
-      { id: user.id, login: login2, fonction },
+      { id: user.id, login: login2, fonction, rem: remember ? 1 : 0 },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '12h' }
+      { expiresIn: remember ? (process.env.JWT_REMEMBER_EXPIRES_IN || '90d') : (process.env.JWT_EXPIRES_IN || '12h') }
     );
 
     let permissions = null;

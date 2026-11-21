@@ -26,6 +26,8 @@ function parseDate(v) {
   return d.getUTCMonth() === +m[2] - 1 ? d : null;
 }
 const iso = (d) => d.toISOString().slice(0, 10);
+const dateIso = (v) => (v instanceof Date ? iso(v) : String(v).slice(0, 10));
+const r2 = (x) => Math.round(x * 100) / 100;
 const addDays = (d, n) => new Date(d.getTime() + n * 86400000);
 
 function period(req) {
@@ -189,6 +191,76 @@ router.get('/alertes', async (req, res) => {
   } catch (err) {
     console.error('carburant alertes error:', err);
     res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// ---- Fuel tank checks (GMAO_APP.app_cuve_controle) -------------------------------------------------
+// A person measures the litres really in the tank. Between two checks the app compares the measured
+// change with what the desktop data explains:
+//   expected = previous measure + deliveries (BL) - fuel issued to engines - other BSM issues of that article
+//   gap      = measure - expected      (negative = fuel missing / unrecorded issue, positive = unrecorded delivery)
+// stock_gap = measure - stock_neuf the desktop believed at the time of the check.
+router.get('/cuve', requireFeature('parc.cuve'), async (req, res) => {
+  try {
+    const pool = await getPool(); const app = await getAppPool();
+    const arts = await pool.request().input('d', sql.Bit, false).query(`
+      select distinct a.id, a.designation, a.stock_neuf from engin_parc_liaison_carburant l
+      inner join article a on l.id_carburant = a.id where l.deleted = @d order by a.designation`);
+    const ctl = await app.request().query('select id, id_article, date_controle, litres_mesures, stock_theorique, note, id_user, created_at from app_cuve_controle order by date_controle, id');
+    const out = [];
+    for (const a of arts.recordset) {
+      const list = ctl.recordset.filter((c) => c.id_article === a.id);
+      const checks = [];
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i], prev = list[i - 1];
+        const item = { id: c.id, date: dateIso(c.date_controle), litres: Number(c.litres_mesures), stock_theorique: c.stock_theorique == null ? null : Number(c.stock_theorique), note: (c.note || '').trim(),
+          ecart_stock: c.stock_theorique == null ? null : r2(Number(c.litres_mesures) - Number(c.stock_theorique)) };
+        if (prev) {
+          const rq = () => pool.request().input('i', sql.Int, a.id).input('d1', sql.Date, addDays(new Date(prev.date_controle), 1)).input('d2', sql.Date, new Date(c.date_controle));
+          const [en, is, bs] = await Promise.all([
+            rq().query('select isnull(sum(la.qt), 0) as v from livraison_article la inner join bon_livraison bl on la.id_livraison = bl.id where la.id_article = @i and bl.date_reel between @d1 and @d2'),
+            rq().query('select isnull(sum(quantite), 0) as v from engin_sortie_carburant where id_carbu in (select id from engin_parc_liaison_carburant where id_carburant = @i) and date between @d1 and @d2 and deleted = 0'),
+            rq().query('select isnull(sum(ba.quantite), 0) as v from bsm_article ba inner join bsm b on ba.id_bsm = b.id where ba.id_article = @i and b.date_bsm between @d1 and @d2')
+          ]);
+          const entrees = Number(en.recordset[0].v), engins = Number(is.recordset[0].v), bsm = Number(bs.recordset[0].v);
+          const attendu = Number(prev.litres_mesures) + entrees - engins - bsm;
+          Object.assign(item, { entrees: r2(entrees), sorties_engins: r2(engins), sorties_bsm: r2(bsm), attendu: r2(attendu), ecart: r2(Number(c.litres_mesures) - attendu) });
+        }
+        checks.push(item);
+      }
+      out.push({ id_article: a.id, designation: (a.designation || '').trim(), stock_desktop: Number(a.stock_neuf), controles: checks.slice(-12).reverse() });
+    }
+    res.json({ articles: out });
+  } catch (err) {
+    console.error('carburant cuve error:', err);
+    res.status(500).json({ error: 'Erreur serveur (la table des contrôles est-elle créée ? voir sql/10_cuve_controle.sql).' });
+  }
+});
+
+router.post('/cuve', requireFeature('parc.cuve'), async (req, res) => {
+  const b = req.body || {};
+  const id = Number.parseInt(b.id_article, 10);
+  const litres = Number(b.litres);
+  const note = String(b.note || '').trim().slice(0, 200);
+  const date = b.date ? parseDate(b.date) : parseDate(iso(new Date()));
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Carburant invalide.' });
+  if (!Number.isFinite(litres) || litres < 0 || litres > 10000000) return res.status(400).json({ error: 'Litres mesurés invalides.' });
+  if (!date || date > parseDate(iso(new Date()))) return res.status(400).json({ error: 'Date invalide (pas dans le futur).' });
+  try {
+    const pool = await getPool();
+    const a = await pool.request().input('i', sql.Int, id).input('d', sql.Bit, false).query(`
+      select a.stock_neuf from article a inner join engin_parc_liaison_carburant l on l.id_carburant = a.id where a.id = @i and l.deleted = @d`);
+    if (a.recordset.length === 0) return res.status(404).json({ error: "Ce n'est pas un carburant du parc." });
+    const app = await getAppPool();
+    const last = await app.request().input('i', sql.Int, id).query('select max(date_controle) as d from app_cuve_controle where id_article = @i');
+    if (last.recordset[0].d && date < new Date(last.recordset[0].d)) return res.status(400).json({ error: 'Il existe déjà un contrôle plus récent pour ce carburant.' });
+    await app.request().input('i', sql.Int, id).input('dt', sql.Date, date).input('l', sql.Float, litres).input('s', sql.Float, Number(a.recordset[0].stock_neuf))
+      .input('n', sql.NVarChar, note || null).input('u', sql.Int, req.user.id)
+      .query('insert into app_cuve_controle (id_article, date_controle, litres_mesures, stock_theorique, note, id_user) values (@i, @dt, @l, @s, @n, @u)');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('carburant cuve save error:', err);
+    res.status(500).json({ error: 'Erreur serveur (la table des contrôles est-elle créée ? voir sql/10_cuve_controle.sql).' });
   }
 });
 

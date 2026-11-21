@@ -678,8 +678,17 @@
         },
         body: options.body ? JSON.stringify(options.body) : undefined
       });
-      let isJson = true;
-      const data = await res.json().catch(() => { isJson = false; return {}; });
+      const txt = await res.text().catch(() => '');
+      usageAdd(approxRequestBytes(path, options), byteLen(txt) + 350);
+      const fresh = res.headers.get('X-New-Token');
+      if (fresh && state.token) { state.token = fresh; try { saveSession(); } catch (e) { /* ignore */ } }
+      let isJson = true, data;
+      try { data = JSON.parse(txt); } catch (e) { isJson = false; data = {}; }
+      if (res.status === 401 && state.token && !path.startsWith('/auth/')) {
+        // session ended (expired, or the account was removed): back to the login screen
+        clearSession(); render();
+        const err = new Error('Session expirée. Reconnectez-vous.'); err.auth = true; throw err;
+      }
       // A stopped tunnel / proxy answers with an HTML error page, not with our JSON.
       if (!res.ok && !isJson && [502, 503, 504, 521, 522, 523, 524, 530].includes(res.status)) {
         const gone = new TypeError('server gone');
@@ -815,7 +824,7 @@
           queueSave(queueAll().filter((x) => x.id !== it.id));
           showToast(`✓ ${it.label} envoyé`);
         } catch (e) {
-          if (e.network || /expired|Missing token/i.test(e.message)) break;          // try again later / after login
+          if (e.network || e.auth) break;          // try again later / after login
           queueSave(queueAll().map((x) => (x.id === it.id ? { ...x, error: e.message } : x)));
         }
       }
@@ -853,6 +862,60 @@
   window.addEventListener('online', () => { syncQueue(); });
   setInterval(() => { if (!document.hidden && state.token && queueFor().some((x) => !x.error)) syncQueue(); }, 45000);
   setTimeout(() => { updateNetBar(); syncQueue(); }, 3000);
+
+  // ---- Data used by the app ---------------------------------------------------------
+  // 1. Native (Android app): the phone's own per-app counters, which include everything the app
+  //    uses, in the foreground and in the background (DataUsage plugin, TrafficStats).
+  // 2. Estimate made by the app itself from what it sends / receives (size before compression).
+  //    It only sees requests made while the app runs, so it is a lower bound.
+  const U_KEY = 'gmao_usage_v1';
+  const byteLen = (t) => { try { return new TextEncoder().encode(t).length; } catch (e) { return String(t).length; } };
+  const approxRequestBytes = (path, o) => 400 + path.length + (o && o.body ? byteLen(JSON.stringify(o.body)) : 0);
+  function usageAdd(tx, rx) {
+    try {
+      const all = lsGet(U_KEY, {}); const d = new Date(); const day = isoDate(d);
+      const k = document.hidden ? 'bg' : 'fg'; const cur = all[day] || {};
+      cur[k + 'Tx'] = (cur[k + 'Tx'] || 0) + tx; cur[k + 'Rx'] = (cur[k + 'Rx'] || 0) + rx; all[day] = cur;
+      Object.keys(all).sort().slice(0, -35).forEach((x) => delete all[x]);
+      lsSet(U_KEY, all);
+    } catch (e) { /* counters are optional */ }
+  }
+  function dataUsagePlugin() {
+    if (!window.Capacitor?.isNativePlatform?.()) return null;
+    return window.Capacitor.Plugins?.DataUsage || window.Capacitor.registerPlugin?.('DataUsage') || null;
+  }
+  async function sampleNativeUsage() {
+    const pl = dataUsagePlugin(); if (!pl) return null;
+    try { return await pl.sample({ state: document.hidden ? 'bg' : 'fg' }); } catch (e) { return null; }
+  }
+  document.addEventListener('visibilitychange', () => { sampleNativeUsage(); });
+  setTimeout(sampleNativeUsage, 2000);
+  setInterval(() => { if (!document.hidden) sampleNativeUsage(); }, 30 * 60000);
+  const fmtBytes = (n) => { n = Number(n) || 0; return n >= 1073741824 ? (n / 1073741824).toFixed(2).replace('.', ',') + ' Go' : n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' Mo' : n >= 1024 ? Math.round(n / 1024) + ' Ko' : n + ' o'; };
+  async function openUsageSheet() {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    const native = await sampleNativeUsage();
+    const est = lsGet(U_KEY, {});
+    const table = (days, src) => {
+      const keys = Object.keys(days).sort().reverse().slice(0, 14);
+      if (!keys.length) return '<div class="muted">Pas encore de mesure.</div>';
+      const tot = (d) => (d.fgRx || 0) + (d.fgTx || 0) + (d.bgRx || 0) + (d.bgTx || 0);
+      const all30 = Object.values(days).reduce((s2, d) => s2 + tot(d), 0);
+      const last7 = keys.slice(0, 7).reduce((s2, k) => s2 + tot(days[k]), 0);
+      return `<div style="margin-bottom:6px"><strong>7 derniers jours : ${fmtBytes(last7)}</strong> · 30 jours : ${fmtBytes(all30)}</div>
+        <table style="${TBL}"><tr><th style="${TD};text-align:left">Jour</th><th style="${TD};text-align:right">Utilisation</th><th style="${TD};text-align:right">Arrière-plan</th><th style="${TD};text-align:right">Total</th></tr>
+        ${keys.map((k) => { const d = days[k]; return `<tr><td style="${TD}">${frDate(k)}</td><td style="${TD};text-align:right">${fmtBytes((d.fgRx || 0) + (d.fgTx || 0))}</td><td style="${TD};text-align:right">${fmtBytes((d.bgRx || 0) + (d.bgTx || 0))}</td><td style="${TD};text-align:right"><strong>${fmtBytes(tot(d))}</strong></td></tr>`; }).join('')}</table>`;
+    };
+    sheet.innerHTML = `<h2 style="margin-top:0">📊 Données utilisées</h2>
+      ${native && native.supported ? `<h3 style="margin:8px 0 4px">Mesure du téléphone (tout le trafic de l'application)</h3>${table(native.days || {})}
+        <div class="muted" style="margin:6px 0">Comptée par Android pour cette application, y compris en arrière-plan. Le trafic fait quand l'application était fermée est ajouté à la lecture suivante. La première mesure démarre à l'installation de cette version.</div>`
+        : '<div class="muted">Le compteur du téléphone n\'est disponible que dans l\'application Android (version à jour).</div>'}
+      <h3 style="margin:12px 0 4px">Estimation par l'application</h3>${table(est)}
+      <div class="muted" style="margin:6px 0">Somme des requêtes faites quand l'application tourne, avant compression : un peu supérieure à la réalité, mais ne voit pas le reste. Le chiffre exact figure aussi dans Réglages Android > Réseau > Utilisation des données > Stock GMAO.</div>
+      <button class="ghost" id="u-reset" style="width:100%;margin-top:8px">Remettre à zéro</button><button class="ghost" id="u-close" style="width:100%;margin-top:8px">Fermer</button>`;
+    sheet.querySelector('#u-close').onclick = close;
+    sheet.querySelector('#u-reset').onclick = async () => { if (!confirm('Remettre les compteurs à zéro ?')) return; lsSet(U_KEY, {}); const pl = dataUsagePlugin(); if (pl) { try { await pl.reset(); } catch (e) { /* ignore */ } } close(); openUsageSheet(); };
+  }
 
   // ---- Rendering -------------------------------------------------------
   const app = document.getElementById('app');
@@ -935,10 +998,10 @@
     if (state.tab === 'brm') return renderHub('brm', { new: renderBrm, pending: (r) => renderPending(r, 'brm'), history: (r) => renderHistorique(r, 'brm') });
     if (state.tab === 'da') return renderHub('da', { review: renderDaReview, new: renderDa, mine: renderDaMine });
     if (state.tab === 'atelier') return renderHub('atelier', { open: (r) => renderAtelierList(r, 'open'), solde: (r) => renderAtelierList(r, 'solde') });
-    if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
+    if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda, cpt: renderMaintCompteurs });
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
-    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
+    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -951,10 +1014,10 @@
     brm: [['new', 'Nouveau', 'brm.create'], ['pending', 'À valider', 'brm.validate'], ['history', 'Historique', 'brm.validate']],
     da: [['review', 'À traiter', 'da.review'], ['new', 'Nouvelle', 'da.create'], ['mine', 'Mes demandes', 'da.create']],
     atelier: [['open', 'OF à solder', null], ['solde', 'Soldés', null]],
-    maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
+    maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view'], ['cpt', 'Compteurs', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
-    parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
+    parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
   function renderHub(tab, renderers) {
@@ -1099,6 +1162,7 @@
     });
   }
   async function uploadDiPhoto(idDi, blob) {
+    usageAdd(blob.size + 400, 350);
     const res = await fetch(getApiBase() + `/maintenance/di/${idDi}/photos`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg', Authorization: 'Bearer ' + state.token }, body: blob });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Envoi de la photo impossible');
@@ -1238,6 +1302,25 @@
       if (add) { add.onclick = () => post(false); req.onclick = () => post(true); }
     } catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="ot-close" style="width:100%">Fermer</button>`; }
     sheet.querySelector('#ot-close').onclick = close;
+  }
+
+  // Preventive plans driven by counters: what is left before each one fires.
+  async function renderMaintCompteurs(root) {
+    root.innerHTML = '<div class="card"><div class="muted">Plans préventifs au compteur (heures / km) : reste avant déclenchement. Les plus avancés en premier.</div></div><div class="card" id="cp-body"><div class="empty">Chargement…</div></div>';
+    const box = root.querySelector('#cp-body');
+    try {
+      const d = await api('/maintenance/compteurs', { fresh: true });
+      if (!d.compteurs.length) { box.innerHTML = '<div class="empty">Aucun plan préventif au compteur</div>'; return; }
+      const row = (c) => { const pct = c.pct == null ? 0 : Math.min(100, c.pct);
+        return `<div class="article-row" ${c.id_engin ? `data-e="${c.id_engin}" style="cursor:pointer;align-items:flex-start"` : 'style="align-items:flex-start"'}>
+          <div style="min-width:0;flex:1"><div class="name">${escapeHtml(c.equipement)}${c.matricule ? ' · ' + escapeHtml(c.matricule) : ''}</div>
+            <div class="code">${escapeHtml(c.gamme || 'Plan')} · ${escapeHtml(c.compteur)}</div>
+            ${c.pct != null ? `<div style="height:5px;background:var(--line);border-radius:3px;margin:4px 0"><div style="height:5px;width:${pct}%;background:${c.etat === 'ok' ? 'var(--accent)' : 'var(--danger, #b3261e)'};border-radius:3px"></div></div>` : ''}
+            <div class="code">${fmtQty(c.valeur)} ${c.sens === 'Inf' ? '↓' : '/'} ${fmtQty(c.seuil)}</div></div>
+          <div style="text-align:right;white-space:nowrap;padding-left:8px">${c.etat === 'depasse' ? pill('Dépassé de ' + fmtQty(-c.restant), true) : `<strong>reste ${fmtQty(c.restant)}</strong>${c.etat === 'proche' ? '<div>' + pill('Proche', true) + '</div>' : ''}`}</div></div>`; };
+      box.innerHTML = `<div class="muted" style="margin-bottom:6px">${d.depasses} dépassé(s) · ${d.proches} proche(s) · ${d.compteurs.length} plan(s)</div>` + d.compteurs.map(row).join('');
+      box.querySelectorAll('[data-e]').forEach((r2) => { r2.onclick = () => openEnginSheet(Number(r2.dataset.e)); });
+    } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
   }
 
   // Agenda ---------------------------------------------------------------------
@@ -1515,6 +1598,7 @@
           <input id="login" autocomplete="username" />
           <label>Mot de passe</label>
           <input id="password" type="password" autocomplete="current-password" />
+          <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-weight:400"><input type="checkbox" id="remember" style="width:auto" ${localStorage.getItem('gmao_remember') === '0' ? '' : 'checked'} /> Rester connecté</label>
           <button class="primary" id="login-btn">Se connecter</button>
           <div class="error" id="login-error"></div>
         </div>
@@ -1538,8 +1622,10 @@
     const password = document.getElementById('password').value;
     const errBox = document.getElementById('login-error');
     errBox.textContent = '';
+    const remember = !!document.getElementById('remember')?.checked;
+    try { localStorage.setItem('gmao_remember', remember ? '1' : '0'); } catch (e) { /* ignore */ }
     try {
-      const data = await api('/auth/login', { method: 'POST', body: { login, password } });
+      const data = await api('/auth/login', { method: 'POST', body: { login, password, remember } });
       state.token = data.token;
       state.user = data.user;
       state.perms = data.permissions || null;
@@ -1647,7 +1733,9 @@
           <span class="muted">${on ? 'Sur données mobiles, rien n\'est téléchargé automatiquement. Vos actions (recherche, création) fonctionnent normalement.' : 'Les listes se mettent à jour automatiquement, même sur données mobiles.'}</span></div>
         <button class="ghost" id="data-toggle">${on ? 'Désactiver' : 'Activer'}</button>
       </div>
-      <button class="ghost" id="data-refresh" style="width:100%;margin-top:6px">↻ Actualiser maintenant</button>`;
+      <button class="ghost" id="data-refresh" style="width:100%;margin-top:6px">↻ Actualiser maintenant</button>
+      <button class="ghost" id="data-usage" style="width:100%;margin-top:6px">📊 Données utilisées</button>`;
+    box.querySelector('#data-usage').onclick = openUsageSheet;
     box.querySelector('#data-toggle').onclick = () => {
       try { localStorage.setItem('gmao_data_saver', on ? '0' : '1'); } catch (e) {}
       drawDataCard();
@@ -2191,6 +2279,36 @@
     }; });
   }
 
+  // Fuel tank checks: litres really measured vs what the desktop data explains.
+  async function renderParcCuve(root) {
+    root.innerHTML = '<div class="card"><div class="muted">Mesurez les litres réellement dans la cuve et saisissez-les. L\'application compare avec les livraisons et les sorties enregistrées depuis le contrôle précédent.</div></div><div id="cv-body"><div class="card"><div class="empty">Chargement…</div></div></div>';
+    const box = root.querySelector('#cv-body');
+    try {
+      const d = await api('/carburant/cuve', { fresh: true });
+      if (!d.articles.length) { box.innerHTML = '<div class="card"><div class="empty">Aucun carburant lié aux engins</div></div>'; return; }
+      const gapPill = (g) => (g == null ? '' : pill((g > 0 ? '+' : '') + fmtL(g), Math.abs(g) > 0));
+      box.innerHTML = d.articles.map((a) => `<div class="card" data-a="${a.id_article}">
+        <h3 style="margin-top:0">${escapeHtml(a.designation)}</h3>
+        <div class="muted">Stock du logiciel de bureau : <strong>${fmtL(a.stock_desktop)}</strong></div>
+        <div style="display:flex;gap:8px;margin:8px 0"><input type="number" class="cv-l" min="0" step="any" placeholder="Litres mesurés" inputmode="decimal" style="flex:1" /><input type="date" class="cv-d" value="${isoDate()}" max="${isoDate()}" style="flex:1" /></div>
+        <input class="cv-n" maxlength="200" placeholder="Note (jauge, bâton, compteur de cuve…)" />
+        <button class="primary cv-save" style="width:100%;margin-top:8px">Enregistrer le contrôle</button><div class="cv-msg"></div>
+        ${a.controles.length ? `<h3 style="margin:12px 0 4px">Derniers contrôles</h3>` + a.controles.map((c) => `<div class="line-item" style="align-items:flex-start"><div class="line-name"><strong>${frDate(c.date)}</strong> · mesuré ${fmtL(c.litres)}${c.note ? ' · ' + escapeHtml(c.note) : ''}<br>
+            <span class="muted">${c.ecart_stock != null ? `vs stock bureau : ${c.ecart_stock > 0 ? '+' : ''}${fmtL(c.ecart_stock)}` : ''}${c.attendu != null ? `<br>Depuis le contrôle précédent : + livraisons ${fmtL(c.entrees)} − engins ${fmtL(c.sorties_engins)} − BSM ${fmtL(c.sorties_bsm)} → attendu ${fmtL(c.attendu)}` : ''}</span></div>
+            <div style="text-align:right">${c.ecart != null ? gapPill(c.ecart) : ''}</div></div>`).join('') : ''}
+        </div>`).join('') + '<div class="muted" style="padding:4px 4px 12px">Écart négatif : il manque du carburant par rapport à ce que les données expliquent (sortie non saisie, fuite, vol, erreur de jauge). Écart positif : livraison non saisie ou erreur de mesure.</div>';
+      box.querySelectorAll('[data-a]').forEach((card) => {
+        card.querySelector('.cv-save').onclick = async () => {
+          const msg = card.querySelector('.cv-msg'); const litres = card.querySelector('.cv-l').value;
+          if (litres === '' || !(Number(litres) >= 0)) { msg.innerHTML = '<div class="error">Saisissez les litres mesurés.</div>'; return; }
+          if (!confirm('Enregistrer ' + litres + ' L mesurés ?')) return;
+          try { await api('/carburant/cuve', { method: 'POST', body: { id_article: Number(card.dataset.a), litres: Number(litres), date: card.querySelector('.cv-d').value, note: card.querySelector('.cv-n').value } }); showToast('Contrôle enregistré'); renderParcCuve(root); }
+          catch (e) { msg.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+        };
+      });
+    } catch (e) { box.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; }
+  }
+
   // Charge totale per engine: fuel + parts + papers over the period (money roles).
   async function renderParcCharge(root) {
     root.innerHTML = parcPeriodCard() + '<div id="parc-body"><div class="card"><div class="empty">Chargement…</div></div></div>';
@@ -2257,8 +2375,8 @@
   function enginFicheHtml(f) {
     const chip = (txt, bad) => `<span class="stock-pill ${bad ? 'low' : ''}" style="margin:2px 4px 2px 0;display:inline-block">${txt}</span>`;
     const papers = f.papiers.length ? f.papiers.map((x) => chip(`${escapeHtml(x.type)} : ${x.etat === 'expire' ? `expiré (${-x.jours} j)` : frDate(x.date_exp)}`, x.etat === 'expire' || x.etat === 'bientot')).join('') : '<span class="muted">Aucun papier enregistré</span>';
-    const cpt = f.compteurs.map((c) => { const pct = c.lancement > 0 ? Math.min(100, Math.round(c.valeur / c.lancement * 100)) : 0;
-      return `<div style="margin:4px 0"><div style="display:flex;justify-content:space-between;font-size:0.85rem"><span>${escapeHtml(c.nom)}</span><span>reste ${fmtQty(c.restant)} / ${fmtQty(c.lancement)}</span></div><div style="height:6px;background:var(--line);border-radius:3px"><div style="height:6px;width:${pct}%;background:${pct >= 90 ? 'var(--danger, #b3261e)' : 'var(--accent)'};border-radius:3px"></div></div></div>`; }).join('');
+    const cpt = f.compteurs.map((c) => { const pct = c.lancement > 0 && c.sens !== 'Inf' ? Math.min(100, Math.round(c.valeur / c.lancement * 100)) : 0;
+      return `<div style="margin:4px 0"><div style="display:flex;justify-content:space-between;font-size:0.85rem"><span>${escapeHtml(c.nom)}</span><span>${c.depasse ? 'dépassé' : 'reste ' + fmtQty(c.restant)} / ${fmtQty(c.lancement)}</span></div><div style="height:6px;background:var(--line);border-radius:3px"><div style="height:6px;width:${pct}%;background:${pct >= 90 ? 'var(--danger, #b3261e)' : 'var(--accent)'};border-radius:3px"></div></div></div>`; }).join('');
     return `<div class="muted">${[f.vehicule, f.marque, f.num_carte && 'carte ' + f.num_carte, f.chauffeur && 'chauffeur ' + f.chauffeur, f.categorie].filter(Boolean).map(escapeHtml).join(' · ')}</div>
       <h3 style="margin:10px 0 4px">Papiers</h3>${papers}
       ${f.lie_equipement ? `<h3 style="margin:10px 0 4px">Maintenance</h3>
