@@ -2,23 +2,18 @@ const express = require('express');
 const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { requireAuth } = require('../middleware/auth');
-const { FEATURES, KEYS, defaultAllowed, loadOverrides, invalidate, permsOf } = require('../features');
+const { isOwner, FEATURES, KEYS, defaultAllowed, loadOverrides, invalidate, permsOf } = require('../features');
 
 // Per-user feature permissions.
 //   GET /me            the effective permissions of the logged in user (any user)
 //   GET /users         users with their role (editors only)
 //   GET /users/:id     every feature: role default, exception, effective right
 //   PUT /users/:id     { overrides: { "<feature>": true | false | null } }  (null = back to the role default)
-// Who may edit: Administrateur accounts, or only the logins listed in PERMISSION_ADMINS
-// (comma separated, e.g. PERMISSION_ADMINS=marwen) when that variable is set.
+// Who may edit: only the owner(s) of the app (OWNER_LOGINS, default marwen). The owner's own rights cannot be changed.
 const router = express.Router();
 router.use(requireAuth);
 
-function canEdit(user) {
-  if ((user.fonction || '').trim() !== 'Administrateur') return false;
-  const only = (process.env.PERMISSION_ADMINS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
-  return only.length === 0 || only.includes(String(user.login || '').toLowerCase());
-}
+function canEdit(user) { return isOwner(user); }
 function requireEditor(req, res, next) {
   if (!canEdit(req.user)) return res.status(403).json({ error: "Vous n'avez pas les droits pour cette action." });
   next();
@@ -55,7 +50,7 @@ router.get('/users/:id', requireEditor, async (req, res) => {
     const over = await loadOverrides(id);
     res.json({
       user: u,
-      features: FEATURES.map((f) => {
+      features: FEATURES.filter((f) => f.key !== 'users.admin').map((f) => {
         const def = defaultAllowed(f, u.fonction);
         const ov = over.has(f.key) ? over.get(f.key) : null;
         return { key: f.key, group: f.group, label: f.label, default: def, override: ov, effective: ov == null ? def : ov };
@@ -75,6 +70,7 @@ router.put('/users/:id', requireEditor, async (req, res) => {
   const entries = Object.entries(ov);
   if (entries.length === 0 || entries.length > 100) return res.status(400).json({ error: 'Modifications invalides.' });
   for (const [k, v] of entries) {
+    if (k === 'users.admin') return res.status(400).json({ error: 'Seul le propriétaire gère les utilisateurs.' });
     if (!KEYS.has(k)) return res.status(400).json({ error: `Droit inconnu : ${k}` });
     if (v !== true && v !== false && v !== null) return res.status(400).json({ error: `Valeur invalide pour ${k}` });
   }
@@ -83,6 +79,7 @@ router.put('/users/:id', requireEditor, async (req, res) => {
   try {
     const u = await loadUser(id);
     if (!u) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+    if (isOwner(u)) return res.status(400).json({ error: 'Les droits du propriétaire ne peuvent pas être modifiés.' });
     const app = await getAppPool();
     const tx = new sql.Transaction(app);
     await tx.begin();

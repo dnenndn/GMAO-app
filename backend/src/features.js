@@ -80,11 +80,20 @@ async function loadOverrides(userId) {
 }
 function invalidate(userId) { if (userId == null) cache.clear(); else cache.delete(userId); }
 
+// The owner(s) of the app (OWNER_LOGINS in .env, default "marwen") have every right, always, and are the only
+// people who manage users and rights. Everybody else, whatever his role, gets his role's rights
+// plus the exceptions the owner set, and never "users.admin".
+function isOwner(user) {
+  const owners = (process.env.OWNER_LOGINS || 'marwen').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  return !!user && owners.includes(String(user.login || '').trim().toLowerCase());
+}
+
 async function effectivePerms(user) {
+  if (isOwner(user)) { const all = {}; for (const f of FEATURES) all[f.key] = true; return all; }
   const base = defaultPerms(user.fonction);
   const over = await loadOverrides(user.id);
   for (const [k, v] of over) if (KEYS.has(k)) base[k] = v;
-  if (defaultAllowed(FEATURES.find((f) => f.key === 'users.admin'), user.fonction)) base['users.admin'] = true; // an Administrateur can always manage users
+  base['users.admin'] = false;
   return base;
 }
 
@@ -107,4 +116,4 @@ function requireAny(keys) {
   };
 }
 
-module.exports = { requireAny, FEATURES, KEYS, defaultAllowed, defaultPerms, effectivePerms, loadOverrides, invalidate, can, permsOf, requireFeature };
+module.exports = { isOwner, requireAny, FEATURES, KEYS, defaultAllowed, defaultPerms, effectivePerms, loadOverrides, invalidate, can, permsOf, requireFeature };

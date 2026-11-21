@@ -28,7 +28,7 @@ async function finish(req, res, user, remember) {
   const { token, fonction, login2 } = issue(res, user, remember);
   getAppPool().then((app) => app.request().input('i', sql.Int, user.desktop_id).query('update app_user set last_login = getdate() where desktop_id = @i')).catch(() => {});
   let permissions = null;
-  try { permissions = await effectivePerms({ id: user.desktop_id, fonction }); } catch (e) { /* the app asks /permissions/me */ }
+  try { permissions = await effectivePerms({ id: user.desktop_id, login: login2, fonction }); } catch (e) { /* the app asks /permissions/me */ }
   res.json({ token, user: { id: user.desktop_id, login: login2, fonction }, permissions });
 }
 

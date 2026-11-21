@@ -140,9 +140,7 @@ passwords are no longer used by the app.
 
 ## Permissions per user
 
-Administrators open *Utilisateurs* > 🔐 next to a user and tick / untick every feature of the app. Only the exceptions
-to the role's defaults are stored. Set `PERMISSION_ADMINS=marwen` in `.env` to limit who may edit permissions to
-the listed logins (default: every Administrateur).
+Only the owner (`OWNER_LOGINS` in `.env`, default `marwen`) has every right and manages users and rights: he opens *Utilisateurs* > 🔐 next to a user and ticks / unticks every feature. Everybody else, even with the role Administrateur, gets his role's rights plus the exceptions the owner set, and never the user management. Only the exceptions to the role's defaults are stored.
 
 ## Offline use on the phone
 

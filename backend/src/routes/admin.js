@@ -2,7 +2,7 @@ const express = require('express');
 const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { requireAuth, forgetActive } = require('../middleware/auth');
-const { requireFeature } = require('../features');
+const { requireFeature, isOwner } = require('../features');
 const { createDesktopShadow, deleteDesktopShadow } = require('../appUsers');
 
 // Administration of the app's own users (GMAO_APP.app_user).
@@ -96,8 +96,9 @@ router.put('/users/:id', async (req, res) => {
   if (id === req.user.id && fonction !== undefined && fonction !== req.user.fonction) return res.status(400).json({ error: 'Vous ne pouvez pas changer votre propre rôle.' });
   try {
     const app = await getAppPool();
-    const cur = (await app.request().input('i', sql.Int, id).query('select fonction, shadow from app_user where desktop_id = @i')).recordset[0];
+    const cur = (await app.request().input('i', sql.Int, id).query('select login, fonction, shadow from app_user where desktop_id = @i')).recordset[0];
     if (!cur) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+    if (isOwner(cur)) return res.status(400).json({ error: 'Le compte propriétaire ne peut pas être modifié ici.' });
     await app.request().input('i', sql.Int, id).input('f', sql.NVarChar, fonction === undefined ? null : fonction)
       .input('a', sql.Bit, active === undefined ? null : !!active)
       .query('update app_user set fonction = coalesce(@f, fonction), actif = coalesce(@a, actif) where desktop_id = @i');
@@ -115,6 +116,8 @@ router.post('/users/:id/reset-password', async (req, res) => {
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Utilisateur invalide.' });
   try {
     const app = await getAppPool();
+    const t = (await app.request().input('i', sql.Int, id).query('select login, fonction, shadow from app_user where desktop_id = @i')).recordset[0];
+    if (t && isOwner(t)) return res.status(400).json({ error: 'Le compte propriétaire ne peut pas être réinitialisé ici.' });
     const r = await app.request().input('i', sql.Int, id).query('update app_user set pwd_hash = null, pwd_set_at = null where desktop_id = @i');
     if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Utilisateur introuvable.' });
     res.json({ ok: true });
