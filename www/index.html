@@ -998,10 +998,10 @@
     if (state.tab === 'brm') return renderHub('brm', { new: renderBrm, pending: (r) => renderPending(r, 'brm'), history: (r) => renderHistorique(r, 'brm') });
     if (state.tab === 'da') return renderHub('da', { review: renderDaReview, new: renderDa, mine: renderDaMine });
     if (state.tab === 'atelier') return renderHub('atelier', { open: (r) => renderAtelierList(r, 'open'), solde: (r) => renderAtelierList(r, 'solde') });
-    if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda, cpt: renderMaintCompteurs });
+    if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
-    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
+    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cpt: renderMaintCompteurs, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -1014,10 +1014,10 @@
     brm: [['new', 'Nouveau', 'brm.create'], ['pending', 'À valider', 'brm.validate'], ['history', 'Historique', 'brm.validate']],
     da: [['review', 'À traiter', 'da.review'], ['new', 'Nouvelle', 'da.create'], ['mine', 'Mes demandes', 'da.create']],
     atelier: [['open', 'OF à solder', null], ['solde', 'Soldés', null]],
-    maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view'], ['cpt', 'Compteurs', 'maintenance.view']],
+    maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
-    parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
+    parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cpt', 'Compteurs', 'maintenance.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
   function renderHub(tab, renderers) {
