@@ -39,6 +39,7 @@ const FEATURES = [
   ['Parc', 'parc.view', 'Parc: gasoil, bons, alertes, papiers', ALL],
   ['Parc', 'parc.cuve', 'Contrôle de cuve carburant (litres mesurés)', ['Administrateur', 'Responsable Méthode', 'Responsable Magasin']],
   ['Parc', 'parc.seuils', "Régler le seuil d'alerte gasoil des engins", ['Administrateur', 'Responsable Méthode', 'Responsable Magasin']],
+  ['Feuillard', 'feuillard.stats', 'Feuillard: statistiques de production (rendement, déchet, arrêts, causes)', ['Administrateur', 'Responsable Méthode', 'DGA']],
   ['Général', 'money.view', 'Voir les montants (coûts OT, tableau de bord, valeurs)', R.MONEY_ROLES],
   ['Administration', 'users.admin', 'Gérer les utilisateurs', R.ADMIN_ROLES]
 ].map(([group, key, label, roles]) => ({ group, key, label, roles }));

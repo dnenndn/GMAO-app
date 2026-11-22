@@ -138,6 +138,14 @@ passwords are no longer used by the app.
    *Se connecter* and choose their password. 🔑 removes a password (the person chooses a new one at next connection); ✕ deactivates the account
    (the session stops within 5 minutes).
 
+## Strapping module (Feuillard)
+
+A second desktop application ("Gestion de Feuillard", database `feuillard` on the same SQL Server) is integrated step by step.
+The backend connects to it with `src/feuillardDb.js` (same login as GMAO unless `FEUILLARD_DB_*` is set in `.env`; the login needs
+access to that database). Its structure is never changed: anything the app needs to add goes into `GMAO_APP`.
+Step 1 (read only): *Feuillard* tab with Rendement, Déchet, Arrêts and Causes (`/api/feuillard/stats/*`), right `feuillard.stats`
+(default: Administrateur, Responsable Méthode, DGA; marwen can grant it to others in 🔐). New roles available when creating users: Chef d'équipe, Qualité.
+
 ## Permissions per user
 
 Only the owner (`OWNER_LOGINS` in `.env`, default `marwen`) has every right and manages users and rights: he opens *Utilisateurs* > 🔐 next to a user and ticks / unticks every feature. Everybody else, even with the role Administrateur, gets his role's rights plus the exceptions the owner set, and never the user management. Only the exceptions to the role's defaults are stored.

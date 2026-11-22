@@ -16,7 +16,7 @@ const { createDesktopShadow, deleteDesktopShadow } = require('../appUsers');
 const router = express.Router();
 router.use(requireAuth, requireFeature('users.admin'));
 
-const ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin', 'Responsable Achat', 'Magasinier', 'Technicien', 'DGA'];
+const ROLES = ['Administrateur', 'Responsable Méthode', 'Responsable Magasin', 'Responsable Achat', 'Magasinier', 'Technicien', 'DGA', "Chef d'équipe", 'Qualité'];
 const fail = (res, err, what) => { console.error(`${what} error:`, err); res.status(500).json({ error: 'Erreur serveur.' }); };
 
 router.get('/roles', (_req, res) => res.json(ROLES));

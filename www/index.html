@@ -937,7 +937,8 @@
       can('production.view') ? tabButton('production', '📝', 'Production') : '',
       can('maintenance.view') || can('di.create') ? tabButton('maintenance', '🔧', 'Maintenance') : '',
       can('atelier.view') ? tabButton('atelier', '🏭', 'Atelier') : '',
-      can('parc.view') ? tabButton('parc', '🚜', 'Parc') : ''
+      can('parc.view') ? tabButton('parc', '🚜', 'Parc') : '',
+      can('feuillard.stats') ? tabButton('feuillard', '🧱', 'Feuillard') : ''
     ].filter(Boolean);
     if (isAdmin()) {
       tabs.push(tabButton('users', '👤', 'Utilisateurs'));
@@ -1002,6 +1003,7 @@
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
     if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cpt: renderMaintCompteurs, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
+    if (state.tab === 'feuillard') return renderHub('feuillard', { rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -1017,6 +1019,7 @@
     maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
+    feuillard: [['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
     parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cpt', 'Compteurs', 'maintenance.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
@@ -1582,7 +1585,7 @@
   }
   function tabAllowed(tab) {
     const need = { stock: ['stock.view'], bsm: ['bsm.create'], brm: ['brm.create'], production: ['production.view'], rapports: ['production.view'],
-      maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], users: ['users.admin'], reception: ['reception.use'],
+      maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], feuillard: ['feuillard.stats'], users: ['users.admin'], reception: ['reception.use'],
       da: ['da.create', 'da.review'], achats: ['achats.view'], analyse: ['stock.insight', 'stock.valuation'] }[tab];
     return !need || need.some(can);
   }
@@ -2310,6 +2313,94 @@
       else { from = new Date(now); from.setDate(from.getDate() - 30); }
       P.from = isoDate(from); P.to = isoDate(to); f.value = P.from; t.value = P.to; reload();
     }; });
+  }
+
+
+  // ---- Feuillard (strapping): production statistics ----------------------------
+  const fmtN = (n, d = 2) => (n == null ? '–' : Number(n).toLocaleString('fr-FR', { maximumFractionDigits: d }));
+  const fmtPct = (n) => (n == null ? '–' : fmtN(n, 1) + ' %');
+  async function feuOptions() {
+    if (!state.feuOpt) state.feuOpt = await api('/feuillard/stats/options');
+    return state.feuOpt;
+  }
+  // period card + optional filters (unité, poste...) shared by the four screens
+  async function feuScreen(root, key, fields, render) {
+    mPeriod(key, 30);
+    let opt;
+    try { opt = await feuOptions(); } catch (e) { root.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; return; }
+    state.feuF = state.feuF || {};
+    const F = state.feuF;
+    const sel = (name, label, list) => `<label style="flex:1" class="muted">${label}<select data-f="${name}"><option value="">Tous</option>${list.map((x) => `<option ${F[name] === x ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('')}</select></label>`;
+    const lists = { unite: ['Unité', opt.unites], poste: ['Poste', opt.postes], chef: ["Chef d'équipe", opt.chefs], ligne: ['Ligne', opt.lignes], type: ['Type', opt.types] };
+    root.innerHTML = periodCard(key) + (fields.length ? `<div class="card" style="padding:10px"><div style="display:flex;gap:8px;flex-wrap:wrap">${fields.map((f) => sel(f, lists[f][0], lists[f][1])).join('')}</div></div>` : '') + '<div id="feu-body"><div class="card"><div class="empty">Chargement…</div></div></div>';
+    const load = async () => {
+      const box = root.querySelector('#feu-body'); if (!box) return;
+      const P = state.mp[key];
+      const qs = new URLSearchParams({ from: P.from, to: P.to });
+      fields.forEach((f) => { if (F[f]) qs.set(f, F[f]); });
+      try { box.innerHTML = await render(qs); } catch (e) { box.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; }
+    };
+    bindPeriod(root, key, load);
+    root.querySelectorAll('select[data-f]').forEach((el) => { el.onchange = () => { F[el.dataset.f] = el.value; load(); }; });
+    load();
+  }
+  const feuBar = (v, max, color) => `<div style="height:5px;margin:3px 0;background:var(--line);border-radius:3px;overflow:hidden"><div style="width:${max > 0 ? Math.max(2, Math.round(v / max * 100)) : 0}%;height:100%;background:${color || 'var(--accent)'}"></div></div>`;
+
+  async function renderFeuRend(root) {
+    return feuScreen(root, 'feuR', ['unite', 'poste'], async (qs) => {
+      const d = await api(`/feuillard/stats/production?${qs}`, { fresh: true });
+      if (!d.rows.length) return '<div class="card"><div class="empty">Aucune production sur cette période</div></div>';
+      const T = d.total;
+      const line = (r, title) => `<div class="article-row" style="align-items:flex-start"><div style="min-width:0;flex:1">
+          <div class="name">${escapeHtml(title)}</div>
+          <div class="code">${fmtN(r.wagons)} wagons · ${fmtN(r.palettes, 0)} palettes · ${fmtN(r.p_w)} P/W</div>
+          <div class="code">Bobines : sorties ${fmtN(r.sorties)} − retours ${fmtN(r.retours)}</div></div>
+          <div style="text-align:right;white-space:nowrap;padding-left:8px"><strong>${fmtPct(r.pct_palette)}</strong><div class="muted">bobine / palette</div><div class="muted">${fmtPct(r.pct_wagon)} / wagon</div></div></div>`;
+      const bricks = ['B12', 'Hourdi', 'B8', 'Platriere'].map((b) => ({ b: b === 'Platriere' ? 'Platrière' : b, w: T.bricks[b].wagons, p: T.bricks[b].palettes })).filter((x) => x.w || x.p);
+      return `
+        <div class="card"><strong>${fmtN(T.wagons)} wagons · ${fmtN(T.palettes, 0)} palettes</strong>
+          <div class="muted">${bricks.map((x) => `${x.b} : ${fmtN(x.w)} wagons / ${fmtN(x.p, 0)} pal.`).join(' · ')}</div>
+          <div style="margin-top:6px">Bobines sorties <strong>${fmtN(T.sorties)}</strong> · retournées <strong>${fmtN(T.retours)}</strong> · utilisées <strong>${fmtN(T.consomme)}</strong></div>
+          <div class="muted">Écart (sorties − retours − utilisées) : ${fmtN(T.ecart)} · Bobine/palette ${fmtPct(T.pct_palette)} · Bobine/wagon ${fmtPct(T.pct_wagon)} · ${fmtN(T.p_w)} P/W</div></div>
+        <div class="card"><h3 style="margin-top:0">Par unité</h3>${d.par_unite.map((r) => line(r, r.unite)).join('')}</div>
+        <div class="card"><h3 style="margin-top:0">Par chef d'équipe</h3>${d.par_chef.map((r) => line(r, r.chef)).join('')}</div>
+        <div class="card"><h3 style="margin-top:0">Détail (chef · unité · article)</h3>${d.rows.map((r) => line(r, `${r.chef} · ${r.unite} · ${r.article}`)).join('')}</div>
+        <div class="muted" style="padding:4px 4px 12px">Mêmes calculs que le tableau de bord du logiciel de bureau. Lorsqu'une production utilise deux articles, les wagons et palettes sont répartis entre eux comme au bureau (57/43 % pour B12 et B8, 55/45 % pour Hourdi et Platrière).</div>`;
+    });
+  }
+
+  async function renderFeuDechet(root) {
+    return feuScreen(root, 'feuD', ['unite', 'chef'], async (qs) => {
+      const d = await api(`/feuillard/stats/dechet?${qs}`, { fresh: true });
+      if (!d.total.n) return '<div class="card"><div class="empty">Aucune production sur cette période</div></div>';
+      const T = d.total, max = Math.max(...d.par_chef.map((x) => x.pct || 0), 1);
+      const grp = (arr, f) => arr.map((x) => `<div class="article-row" style="align-items:flex-start"><div style="min-width:0;flex:1"><div class="name">${escapeHtml(x[f])}</div>${feuBar(x.pct || 0, max, (x.pct || 0) > (T.pct || 0) ? '#c0392b' : 'var(--accent)')}<div class="code">${x.n} production(s) · ${fmtN(x.dechet_m, 0)} m perdus sur ${fmtN(x.total_m, 0)} m</div></div><div style="padding-left:8px"><strong>${fmtPct(x.pct)}</strong></div></div>`).join('');
+      return `
+        <div class="card"><strong>Déchet : ${fmtPct(T.pct)}</strong><div class="muted">${fmtN(T.dechet_m, 0)} m de feuillard perdus sur ${fmtN(T.total_m, 0)} m utilisés · ${T.n} production(s)</div></div>
+        <div class="card"><h3 style="margin-top:0">Par chef d'équipe</h3>${grp(d.par_chef, 'chef')}</div>
+        <div class="card"><h3 style="margin-top:0">Par unité</h3>${grp(d.par_unite, 'unite')}</div>
+        <div class="card"><h3 style="margin-top:0">Dernières productions</h3>${d.recent.map((x) => `<div class="article-row"><div style="min-width:0;flex:1"><div class="name">${frDate(String(x.date).slice(0, 10))} · ${escapeHtml(x.unite)} · ${escapeHtml(x.poste || '')}</div><div class="code">${escapeHtml(x.chef)} · ${escapeHtml(x.brique || '')}</div></div><div style="text-align:right;padding-left:8px"><strong>${fmtPct(x.pct)}</strong><div class="muted">${fmtN(x.dechet_m, 0)} m</div></div></div>`).join('')}</div>
+        <div class="muted" style="padding:4px 4px 12px">Déchet = mètres des bobines utilisées − mètres nécessaires pour les palettes produites (longueur par palette fixée comme dans le logiciel de bureau).</div>`;
+    });
+  }
+
+  async function renderFeuArrets(root) {
+    return feuScreen(root, 'feuA', ['unite', 'ligne'], async (qs) => {
+      const d = await api(`/feuillard/stats/arrets?${qs}`, { fresh: true });
+      if (!d.rows.length) return '<div class="card"><div class="empty">Aucun arrêt de machine sur cette période</div></div>';
+      const max = d.rows[0].secondes;
+      return `<div class="card"><strong>${escapeHtml(d.total.duree)} d'arrêt</strong><div class="muted">${fmtN(d.total.frequence, 0)} arrêt(s) · ${d.rows.length} cause(s)</div></div>
+        <div class="card">${d.rows.map((r) => `<div class="article-row" style="align-items:flex-start"><div style="min-width:0;flex:1"><div class="name">${escapeHtml(r.cause)}</div>${feuBar(r.secondes, max)}<div class="code">${escapeHtml(r.unite)} · ${escapeHtml(r.ligne)} · ${escapeHtml(r.machine)}</div></div><div style="text-align:right;white-space:nowrap;padding-left:8px"><strong>${escapeHtml(r.duree)}</strong><div class="muted">${fmtN(r.frequence, 0)} fois</div></div></div>`).join('')}</div>`;
+    });
+  }
+
+  async function renderFeuCauses(root) {
+    return feuScreen(root, 'feuC', ['unite', 'type'], async (qs) => {
+      const d = await api(`/feuillard/stats/causes?${qs}`, { fresh: true });
+      if (!d.rows.length) return '<div class="card"><div class="empty">Aucune cause de déchet enregistrée sur cette période</div></div>';
+      const max = d.rows[0].n;
+      return `<div class="card">${d.rows.map((r) => `<div class="article-row" style="align-items:flex-start"><div style="min-width:0;flex:1"><div class="name">${escapeHtml(r.designation)}</div>${feuBar(r.n, max)}<div class="code">${escapeHtml(r.unite)} · ${escapeHtml(r.type)}</div></div><div style="padding-left:8px"><strong>${r.n}</strong></div></div>`).join('')}</div>`;
+    });
   }
 
   // Fuel tank checks: litres really measured vs what the desktop data explains.
