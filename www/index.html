@@ -1004,7 +1004,7 @@
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
     if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cpt: renderMaintCompteurs, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
-    if (state.tab === 'feuillard') return renderHub('feuillard', { mvt: renderFeuMvt, prod: renderFeuProd, rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
+    if (state.tab === 'feuillard') return renderHub('feuillard', { stk: renderFeuStock, mvt: renderFeuMvt, prod: renderFeuProd, rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -1020,7 +1020,7 @@
     maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
-    feuillard: [['mvt', 'Mouvements', 'feuillard.write'], ['prod', 'Production', 'feuillard.production'], ['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
+    feuillard: [['stk', 'Stock', null], ['mvt', 'Mouvements', 'feuillard.write'], ['prod', 'Production', 'feuillard.production'], ['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
     parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cpt', 'Compteurs', 'maintenance.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
@@ -2317,6 +2317,39 @@
   }
 
 
+
+
+  // Feuillard stock: what the desktop shows, plus a check recalculated from all the movements
+  async function renderFeuStock(root) {
+    root.innerHTML = '<div class="card"><div class="empty">Chargement…</div></div>';
+    let d;
+    try { d = await api('/feuillard/stock', { fresh: true }); } catch (e) { root.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; return; }
+    const sg = (n) => (n > 0 ? '+' : '') + fmtN(n);
+    const tot = d.rows.reduce((t, r) => t + r.stock, 0);
+    root.innerHTML = `
+      <div class="card"><strong>${fmtN(tot)} bobines en stock</strong>
+        <div class="muted">${d.rows.length} article(s) · ${d.ecarts ? `<span style="color:#c0392b">${d.ecarts} écart(s) à vérifier</span>` : 'aucun écart de stock'}</div></div>
+      ${d.rows.map((r) => `<div class="card" data-id="${r.id}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="min-width:0"><div class="name"><strong>${escapeHtml(r.designation)}</strong></div>
+            <div class="muted">${r.metres != null ? fmtN(r.metres, 0) + ' m · ' : ''}${r.jours != null ? `≈ ${fmtN(r.jours, 0)} jours de consommation (30 j : ${fmtN(r.sorties30)} sorties)` : 'pas de sortie ces 30 jours'}</div></div>
+          <div style="text-align:right;white-space:nowrap"><div style="font-size:1.4rem;font-weight:700">${fmtN(r.stock)}</div>${r.ok ? '' : pill('Écart ' + sg(r.ecart_net), true)}</div></div>
+        <details style="margin-top:6px"><summary class="muted">Détail du calcul</summary>
+          <div class="code">Entrées ${fmtN(r.detail.entrees)} − sorties ${fmtN(r.detail.sorties)} + retours en bon état ${fmtN(r.detail.retours_bon)} − retours fournisseur ${fmtN(r.detail.retours_four)} = <strong>${fmtN(r.recalcule)}</strong></div>
+          <div class="code">Stock affiché au bureau : ${fmtN(r.stock)}${r.base ? ` · écart déjà accepté : ${sg(r.base)}` : ''}${r.detail.retours_mauvais ? ` · retours en mauvais état (pas remis en stock) : ${fmtN(r.detail.retours_mauvais)}` : ''}</div>
+          ${r.lignes_stock !== 1 ? `<div class="error">${r.lignes_stock} ligne(s) de stock pour cet article dans la base (1 attendue).</div>` : ''}
+          ${!r.ok ? `<div class="muted" style="margin-top:4px">Une suppression de retour ou de retour fournisseur au bureau, ou une modification directe du stock, laisse un écart. Rien n'est corrigé automatiquement.</div>` : ''}
+          ${d.can_accept && r.ecart !== r.base ? `<button class="ghost" data-accept="${r.id}" style="margin-top:6px">Accepter l'écart (${sg(r.ecart)}) comme stock initial</button>` : ''}
+        </details></div>`).join('')}
+      <div class="muted" style="padding:4px 4px 12px">Stock recalculé = entrées − sorties + retours « Bon état » − retours fournisseur. Si le stock a été saisi au départ sans mouvement, utilisez « Accepter l'écart » : seuls les nouveaux écarts seront signalés.</div>`;
+    root.querySelectorAll('[data-accept]').forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm("Accepter l'écart actuel de cet article comme stock initial ?\nSeuls les écarts futurs seront signalés.")) return;
+        try { await api('/feuillard/stock/accept', { method: 'POST', body: { id_article: Number(b.dataset.accept) } }); showToast('✓ Écart accepté'); renderFeuStock(root); }
+        catch (e) { showToast(e.message, true); }
+      };
+    });
+  }
 
   // ---- Feuillard: entering movements and production -------------------------------
   async function feuRefs(fresh) {

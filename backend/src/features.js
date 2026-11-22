@@ -42,6 +42,7 @@ const FEATURES = [
   ['Feuillard', 'feuillard.stats', 'Feuillard: statistiques de production (rendement, déchet, arrêts, causes)', ['Administrateur', 'Responsable Méthode', 'DGA']],
   ['Feuillard', 'feuillard.write', 'Feuillard: saisir entrées, sorties, retours et retours fournisseur', ['Administrateur', 'Responsable Magasin', 'Magasinier']],
   ['Feuillard', 'feuillard.production', 'Feuillard: saisir la production (causes de déchet, arrêts machine)', ['Administrateur', 'Responsable Méthode', "Chef d'équipe"]],
+  ['Feuillard', 'feuillard.stock_base', "Feuillard: accepter l'écart de stock constaté (stock initial)", ['Administrateur']],
   ['Général', 'money.view', 'Voir les montants (coûts OT, tableau de bord, valeurs)', R.MONEY_ROLES],
   ['Administration', 'users.admin', 'Gérer les utilisateurs', R.ADMIN_ROLES]
 ].map(([group, key, label, roles]) => ({ group, key, label, roles }));

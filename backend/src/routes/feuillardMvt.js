@@ -5,6 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const { requireFeature, requireAny, can } = require('../features');
 const { idempotent } = require('../idempotency');
 const V = require('../feuillardInput');
+const S = require('../feuillardStats');
 
 // Strapping module: entering movements and production from the phone. Every movement and its stock update are saved
 // in ONE transaction (the desktop application does them separately and can leave the stock wrong).
@@ -190,6 +191,53 @@ router.post('/production', prodRight, idempotent, async (req, res) => {
     await log(req, 'production', out.id, `Production ${d.brique} ${d.nbre_wagon} wagons / ${d.nbre_palette} palettes (${d.poste}, ${d.date})`);
     res.status(201).json({ ok: true, id: out.id });
   } catch (err) { fail(res, err, 'production'); }
+});
+
+// Stock per article with the recalculated check. Read only (anybody who has a strapping right).
+async function loadStock() {
+  const pool = await getFeuillardPool();
+  const d30 = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const r = await pool.request().input('bon', sql.VarChar, 'Bon état').input('d30', sql.Date, d30).query(
+    `select a.id, a.designation, a.qt_meter,
+            isnull((select sum(qt) from stock_feuillard where id_article = a.id), 0) as stock,
+            (select count(*) from stock_feuillard where id_article = a.id) as lignes_stock,
+            isnull((select sum(qt) from entre_magasin where id_article = a.id), 0) as entrees,
+            isnull((select sum(qt) from sortie_feuillard where id_article = a.id), 0) as sorties,
+            isnull((select sum(qt) from retour_feuillard where id_article = a.id and type = @bon), 0) as retours_bon,
+            isnull((select sum(qt) from retour_feuillard where id_article = a.id and (type is null or type <> @bon)), 0) as retours_mauvais,
+            isnull((select sum(qt) from sortie_fournisseur where id_article = a.id), 0) as retours_four,
+            isnull((select sum(qt) from sortie_feuillard where id_article = a.id and date_sortie >= @d30), 0) as sorties30
+     from article_feuillard a order by a.designation`);
+  let bases = new Map();
+  try { const app = await getAppPool(); bases = new Map((await app.request().query('select id_article, ecart from app_feuillard_stock_base')).recordset.map((x) => [x.id_article, x.ecart])); }
+  catch (e) { /* table not created yet: no accepted difference */ }
+  return r.recordset.map((x) => S.stockCheck(Object.assign({}, x, { designation: trim(x.designation) }), bases.get(x.id) || 0));
+}
+router.get('/stock', anyRight, async (req, res) => {
+  try {
+    const rows = await loadStock();
+    res.json({ rows, ecarts: rows.filter((x) => !x.ok).length, can_accept: can(req, 'feuillard.stock_base') });
+  } catch (err) { fail(res, err, 'stock'); }
+});
+
+// "Accepter l'écart": remember today's difference of an article (or of all) as its opening balance.
+router.post('/stock/accept', requireAuth, requireFeature('feuillard.stock_base'), async (req, res) => {
+  try {
+    const wanted = req.body && req.body.id_article != null ? V.id(req.body.id_article, 'Article') : null;
+    const rows = (await loadStock()).filter((x) => (wanted ? x.id === wanted : true));
+    if (wanted && !rows.length) return res.status(400).json({ error: 'Article introuvable.' });
+    const app = await getAppPool();
+    let n = 0;
+    for (const x of rows) {
+      await app.request().input('a', sql.Int, x.id).input('e', sql.Float, x.ecart).input('u', sql.Int, req.user.id).query(`
+        merge app_feuillard_stock_base as t using (select @a as id_article) as s on t.id_article = s.id_article
+        when matched then update set ecart = @e, accepted_by = @u, accepted_at = getdate()
+        when not matched then insert (id_article, ecart, accepted_by) values (@a, @e, @u);`);
+      n++;
+    }
+    await log(req, 'stock_base', wanted, `Écart de stock accepté (${n} article(s))`);
+    res.json({ ok: true, n });
+  } catch (err) { fail(res, err, 'stock accept'); }
 });
 
 const LISTS = {

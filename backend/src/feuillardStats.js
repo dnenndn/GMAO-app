@@ -132,4 +132,22 @@ function stoppages(rows) {
   return { rows: list, total: { frequence: list.reduce((t, o) => t + o.frequence, 0), secondes: s, duree: `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')} min` } };
 }
 
-module.exports = { BRICKS, parseBrique, brickShares, productionDashboard, wasteOfRecord, wasteReport, seconds, stoppages, metresNeeded };
+// ---- stock check: the stored stock (what the desktop shows) against the stock recalculated from the movements:
+// receipts - issues + returns in good condition - returns to the supplier. `base` = difference accepted by the owner.
+function stockCheck(r, base) {
+  const n = (v) => Math.round(num(v) * 100) / 100;
+  const recalcule = n(num(r.entrees) - num(r.sorties) + num(r.retours_bon) - num(r.retours_four));
+  const stock = n(r.stock);
+  const ecart = n(stock - recalcule);
+  const net = n(ecart - num(base));
+  const par_jour = num(r.sorties30) / 30;
+  return {
+    id: r.id, designation: r.designation, qt_meter: r.qt_meter == null ? null : num(r.qt_meter), stock, recalcule, ecart, base: n(base), ecart_net: net, ok: Math.abs(net) < 0.005,
+    metres: r.qt_meter ? Math.round(stock * num(r.qt_meter)) : null,
+    jours: par_jour > 0 ? Math.round(stock / par_jour * 10) / 10 : null,
+    sorties30: n(r.sorties30), lignes_stock: num(r.lignes_stock),
+    detail: { entrees: n(r.entrees), sorties: n(r.sorties), retours_bon: n(r.retours_bon), retours_mauvais: n(r.retours_mauvais), retours_four: n(r.retours_four) }
+  };
+}
+
+module.exports = { stockCheck, BRICKS, parseBrique, brickShares, productionDashboard, wasteOfRecord, wasteReport, seconds, stoppages, metresNeeded };

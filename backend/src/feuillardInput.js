@@ -71,4 +71,4 @@ function production(b, now) {
   return out;
 }
 
-module.exports = { POSTES, BRIQUES, RETOUR_TYPES, CAUSE_TYPES, Bad, entree, sortie, retour, retourFournisseur, production };
+module.exports = { id, POSTES, BRIQUES, RETOUR_TYPES, CAUSE_TYPES, Bad, entree, sortie, retour, retourFournisseur, production };
