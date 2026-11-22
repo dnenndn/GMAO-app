@@ -150,4 +150,23 @@ function stockCheck(r, base) {
   };
 }
 
-module.exports = { stockCheck, BRICKS, parseBrique, brickShares, productionDashboard, wasteOfRecord, wasteReport, seconds, stoppages, metresNeeded };
+// ---- incoming quality: one coil measured against the article's tolerances (min <= value <= max, as the desktop does)
+function judgeCoil(row, tol) {
+  const chk = (v, lo, hi) => {
+    if (v == null || v === '') return 'ok';
+    const n = Number(v);
+    if (lo != null && n < Number(lo)) return 'bas';
+    if (hi != null && n > Number(hi)) return 'haut';
+    return 'ok';
+  };
+  const flags = {
+    poids: chk(row.poids, tol.min_poids, tol.max_poids),
+    epaisseur: chk(row.epaisseur, tol.min_epaisseur, tol.max_epaisseur),
+    largeur: chk(row.largeur, tol.min_largeur, tol.max_largeur),
+    fissure: String(row.fissure || '').trim().toLowerCase() === 'oui' ? 'mauvais' : 'ok',
+    couleur: String(row.couleur || '').trim().toLowerCase() === 'mauvais' ? 'mauvais' : 'ok'
+  };
+  return { flags, ok: Object.values(flags).every((x) => x === 'ok') };
+}
+
+module.exports = { judgeCoil, stockCheck, BRICKS, parseBrique, brickShares, productionDashboard, wasteOfRecord, wasteReport, seconds, stoppages, metresNeeded };

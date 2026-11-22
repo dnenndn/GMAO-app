@@ -929,7 +929,7 @@
     }
     // Two entries cover the business objects: Magasin (BSM / BRM / DA, plus
     // Réception for managers) and Production (rapports + ordres de fabrication).
-    const FEU = ['feuillard.stats', 'feuillard.write', 'feuillard.production'];
+    const FEU = ['feuillard.stats', 'feuillard.write', 'feuillard.production', 'feuillard.qualite'];
     const MAG = ['bsm.create', 'brm.create', 'da.create', 'da.review', 'reception.use', 'stock.insight', 'achats.view', 'bsm.validate', 'brm.validate'];
     const tabs = [
       tabButton('accueil', '🏠', 'Accueil'),
@@ -1004,7 +1004,7 @@
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
     if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cpt: renderMaintCompteurs, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
-    if (state.tab === 'feuillard') return renderHub('feuillard', { stk: renderFeuStock, mvt: renderFeuMvt, prod: renderFeuProd, rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
+    if (state.tab === 'feuillard') return renderHub('feuillard', { stk: renderFeuStock, mvt: renderFeuMvt, prod: renderFeuProd, qual: renderFeuQual, rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -1020,7 +1020,7 @@
     maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
-    feuillard: [['stk', 'Stock', null], ['mvt', 'Mouvements', 'feuillard.write'], ['prod', 'Production', 'feuillard.production'], ['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
+    feuillard: [['stk', 'Stock', null], ['mvt', 'Mouvements', 'feuillard.write'], ['prod', 'Production', 'feuillard.production'], ['qual', 'Qualité', 'feuillard.qualite'], ['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
     parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cpt', 'Compteurs', 'maintenance.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
@@ -1586,7 +1586,7 @@
   }
   function tabAllowed(tab) {
     const need = { stock: ['stock.view'], bsm: ['bsm.create'], brm: ['brm.create'], production: ['production.view'], rapports: ['production.view'],
-      maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], feuillard: ['feuillard.stats', 'feuillard.write', 'feuillard.production'], users: ['users.admin'], reception: ['reception.use'],
+      maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], feuillard: ['feuillard.stats', 'feuillard.write', 'feuillard.production', 'feuillard.qualite'], users: ['users.admin'], reception: ['reception.use'],
       da: ['da.create', 'da.review'], achats: ['achats.view'], analyse: ['stock.insight', 'stock.valuation'] }[tab];
     return !need || need.some(can);
   }
@@ -2349,6 +2349,124 @@
         catch (e) { showToast(e.message, true); }
       };
     });
+  }
+
+
+  // ---- Feuillard: incoming quality control (coil measurements, decision, photos, PDF) ----
+  async function renderFeuQual(root) {
+    const P = mPeriod('feuq', 30);
+    root.innerHTML = periodCard('feuq') + '<div id="fq-list"><div class="card"><div class="empty">Chargement…</div></div></div>';
+    bindPeriod(root, 'feuq', () => renderFeuQual(root));
+    const box = root.querySelector('#fq-list');
+    try {
+      const d = await api(`/feuillard/qualite/entrees?from=${P.from}&to=${P.to}`, { fresh: true });
+      box.innerHTML = d.rows.length ? d.rows.map((r) => `<div class="card" data-e="${r.id}" style="cursor:pointer">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+          <div style="min-width:0"><div class="name"><strong>${escapeHtml(r.article)}</strong></div>
+            <div class="muted">${frDate(String(r.date).slice(0, 10))} · ${escapeHtml(r.fournisseur || '—')} · ${fmtN(r.qt)} bobines</div></div>
+          <div style="text-align:right;white-space:nowrap">${r.nb ? `<div>${r.nb} mesurée(s)</div>` : '<div class="muted">à contrôler</div>'}${r.nb_nc ? pill(r.nb_nc + ' hors tolérance', true) : ''}${r.decision ? pill('Décision ✓', false) : ''}</div></div></div>`).join('') : '<div class="card"><div class="empty">Aucune entrée sur cette période</div></div>';
+      box.querySelectorAll('[data-e]').forEach((c) => { c.onclick = () => openFeuQualSheet(Number(c.dataset.e), () => renderFeuQual(root)); });
+    } catch (e) { box.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; }
+  }
+
+  async function openFeuQualSheet(id, onChange) {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    const reload = () => openFeuQualSheetBody(id, sheet, close, onChange);
+    reload();
+  }
+  async function openFeuQualSheetBody(id, sheet, close, onChange) {
+    let d;
+    try { d = await api(`/feuillard/qualite/${id}`, { fresh: true }); }
+    catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div><button class="ghost" id="fq-close" style="width:100%">Fermer</button>`; sheet.querySelector('#fq-close').onclick = close; return; }
+    const T = d.tol; const rng = (a, b, u) => (a == null && b == null ? '—' : `${a == null ? '…' : fmtN(a, 2)} – ${b == null ? '…' : fmtN(b, 2)} ${u}`);
+    const bad = (r, k) => (r.flags[k] !== 'ok' ? 'color:#c0392b;font-weight:700' : '');
+    const nc = d.rows.filter((r) => !r.ok).length;
+    sheet.innerHTML = `
+      <h2 style="margin-top:0">Entrée n° ${d.entree.id}</h2>
+      <div class="muted">${escapeHtml(d.entree.article)} · ${frDate(String(d.entree.date).slice(0, 10))} · ${escapeHtml(d.entree.fournisseur || '—')} · ${fmtN(d.entree.qt)} bobines</div>
+      <div class="code" style="margin:8px 0">Tolérances — poids ${rng(T.min_poids, T.max_poids, 'kg')} · épaisseur ${rng(T.min_epaisseur, T.max_epaisseur, 'mm')} · largeur ${rng(T.min_largeur, T.max_largeur, 'mm')}</div>
+      <h3>Bobines mesurées (${d.rows.length}${nc ? ` · <span style="color:#c0392b">${nc} hors tolérance</span>` : ''})</h3>
+      <div id="fq-rows">${d.rows.length ? d.rows.map((r, i) => `<div class="line-item" data-r="${r.id}" style="cursor:pointer;align-items:flex-start">
+        <div style="min-width:0;flex:1"><div class="name">N° ${i + 1} · <span style="${bad(r, 'poids')}">${fmtN(r.poids, 1)} kg</span> · <span style="${bad(r, 'epaisseur')}">ép. ${fmtN(r.epaisseur, 2)}</span> · <span style="${bad(r, 'largeur')}">lg ${fmtN(r.largeur, 2)}</span></div>
+        <div class="code">fissure <span style="${bad(r, 'fissure')}">${escapeHtml(r.fissure)}</span> · couleur <span style="${bad(r, 'couleur')}">${escapeHtml(r.couleur)}</span> · ${escapeHtml(r.controleur || '—')}${r.observation ? ' · ' + escapeHtml(r.observation) : ''}</div></div>
+        ${r.ok ? '' : pill('NC', true)}</div>`).join('') : '<div class="muted">Aucune mesure pour le moment.</div>'}</div>
+      <div class="card" style="margin:10px 0 0;padding:10px"><strong id="fq-ft">Ajouter une bobine</strong>
+        <div style="display:flex;gap:8px"><label style="flex:1">Poids (kg)<input id="fq-p" inputmode="decimal" /></label><label style="flex:1">Épaisseur<input id="fq-e" inputmode="decimal" /></label><label style="flex:1">Largeur<input id="fq-l" inputmode="decimal" /></label></div>
+        <div style="display:flex;gap:8px"><label style="flex:1">Fissure<select id="fq-f"><option>Non</option><option>Oui</option></select></label><label style="flex:1">Couleur<select id="fq-c"><option>Bon</option><option>Mauvais</option></select></label></div>
+        <label>Observation (facultatif)</label><input id="fq-o" maxlength="500" />
+        <div class="error" id="fq-err"></div>
+        <div style="display:flex;gap:8px;margin-top:6px"><button class="primary" id="fq-add" style="flex:2">Ajouter</button><button class="ghost" id="fq-del" style="flex:1;display:none">Supprimer</button><button class="ghost" id="fq-cancel" style="flex:1;display:none">Annuler</button></div></div>
+      <h3>Décision</h3>
+      <textarea id="fq-dec" rows="3" maxlength="1000" placeholder="Ex. : lot accepté / lot refusé — motif…">${escapeHtml(d.decision || '')}</textarea>
+      <button class="ghost" id="fq-decsave" style="width:100%;margin-top:6px">${d.decision == null ? 'Enregistrer la décision' : 'Modifier la décision'}</button>
+      <h3>Photos (${d.photos.length})</h3>
+      <div id="fq-photos" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+      <label class="ghost" style="display:block;text-align:center;margin-top:8px;padding:10px;border:1px dashed var(--line,#999);border-radius:10px;cursor:pointer">📷 Ajouter une photo<input type="file" id="fq-file" accept="image/*" style="display:none" /></label>
+      <button class="ghost" id="fq-pdf" style="width:100%;margin-top:12px">📄 Rapport PDF</button>
+      <button class="ghost" id="fq-close" style="width:100%;margin-top:8px">Fermer</button>`;
+    const $ = (s) => sheet.querySelector(s); const err = (m) => { $('#fq-err').textContent = m || ''; };
+    const done = () => { onChange && onChange(); openFeuQualSheetBody(id, sheet, close, onChange); };
+    $('#fq-close').onclick = close;
+    let editing = null;
+    const setEdit = (r) => {
+      editing = r; $('#fq-ft').textContent = r ? 'Modifier la bobine' : 'Ajouter une bobine'; $('#fq-add').textContent = r ? 'Enregistrer' : 'Ajouter';
+      $('#fq-del').style.display = r ? '' : 'none'; $('#fq-cancel').style.display = r ? '' : 'none';
+      $('#fq-p').value = r ? r.poids : ''; $('#fq-e').value = r ? r.epaisseur : ''; $('#fq-l').value = r ? r.largeur : '';
+      $('#fq-f').value = r ? r.fissure : 'Non'; $('#fq-c').value = r ? r.couleur : 'Bon'; $('#fq-o').value = r ? r.observation : ''; err('');
+    };
+    sheet.querySelectorAll('[data-r]').forEach((el) => { el.onclick = () => { setEdit(d.rows.find((x) => x.id === Number(el.dataset.r))); $('#fq-ft').scrollIntoView({ block: 'center' }); }; });
+    $('#fq-cancel').onclick = () => setEdit(null);
+    $('#fq-add').onclick = async () => {
+      err('');
+      const body = { date: isoDate(), poids: numVal($('#fq-p')), epaisseur: numVal($('#fq-e')), largeur: numVal($('#fq-l')), fissure: $('#fq-f').value, couleur: $('#fq-c').value, observation: $('#fq-o').value.trim() };
+      for (const [k, l] of [['poids', 'Poids'], ['epaisseur', 'Épaisseur'], ['largeur', 'Largeur']]) if (!(body[k] > 0)) { err(`${l} : nombre strictement positif.`); return; }
+      const btn = $('#fq-add'); btn.disabled = true;
+      try {
+        if (editing) { body.date = String(editing.date).slice(0, 10); await api(`/feuillard/qualite/ligne/${editing.id}`, { method: 'PUT', body }); showToast('✓ Mesure modifiée'); done(); }
+        else {
+          const r = await postOrQueue({ path: `/feuillard/qualite/${id}/ligne`, kind: 'feuillard', label: `Contrôle qualité entrée ${id} (${body.poids} kg)`, body });
+          if (r.out) { showToast('✓ Bobine ajoutée'); done(); } else { showToast('Enregistré hors ligne, envoi dès le retour du réseau'); setEdit(null); btn.disabled = false; }
+        }
+      } catch (e) { err(e.message); btn.disabled = false; }
+    };
+    $('#fq-del').onclick = async () => {
+      if (!editing || !confirm('Supprimer cette mesure ?')) return;
+      try { await api(`/feuillard/qualite/ligne/${editing.id}`, { method: 'DELETE' }); showToast('Mesure supprimée'); done(); } catch (e) { err(e.message); }
+    };
+    $('#fq-decsave').onclick = async () => {
+      const t = $('#fq-dec').value.trim(); if (!t) { showToast('Écrivez la décision.', true); return; }
+      try { await api(`/feuillard/qualite/${id}/decision`, { method: 'PUT', body: { observation: t } }); showToast('✓ Décision enregistrée'); done(); } catch (e) { showToast(e.message, true); }
+    };
+    d.photos.forEach(async (pid) => {
+      try {
+        const res = await fetch(getApiBase() + '/feuillard/qualite/photo/' + pid, { headers: { Authorization: 'Bearer ' + state.token } });
+        if (!res.ok) throw new Error('photo');
+        const url = URL.createObjectURL(await res.blob()); const box = $('#fq-photos'); if (!box) return;
+        box.insertAdjacentHTML('beforeend', `<span style="position:relative"><img data-blob src="${url}" style="width:96px;height:96px;object-fit:cover;border-radius:8px" /><button data-pd="${pid}" style="position:absolute;top:2px;right:2px;padding:0 6px;border-radius:10px;line-height:20px">×</button></span>`);
+        box.querySelector(`[data-pd="${pid}"]`).onclick = async () => { if (!confirm('Supprimer cette photo ?')) return; try { await api(`/feuillard/qualite/photo/${pid}`, { method: 'DELETE' }); done(); } catch (e) { showToast(e.message, true); } };
+      } catch (e) { /* ignore */ }
+    });
+    $('#fq-file').onchange = async (ev) => {
+      const f = ev.target.files[0]; if (!f) return;
+      try {
+        const blob = await shrinkPhoto(f); usageAdd(blob.size + 400, 350);
+        const res = await fetch(getApiBase() + `/feuillard/qualite/${id}/photos`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg', Authorization: 'Bearer ' + state.token }, body: blob });
+        const out = await res.json().catch(() => ({})); if (!res.ok) throw new Error(out.error || 'Envoi de la photo impossible');
+        showToast('✓ Photo ajoutée'); done();
+      } catch (e) { showToast(e.message, true); }
+    };
+    $('#fq-pdf').onclick = async () => {
+      const b = $('#fq-pdf'); b.disabled = true;
+      try {
+        const res = await fetch(getApiBase() + `/feuillard/qualite/${id}/pdf`, { headers: { Authorization: 'Bearer ' + state.token } });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'PDF indisponible');
+        const blob = await res.blob(); usageAdd(100, blob.size);
+        const file = new File([blob], `controle-qualite-${id}.pdf`, { type: 'application/pdf' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: `Contrôle qualité n° ${id}` }); } catch (e) { if (e.name !== 'AbortError') throw e; } }
+        else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove(); }
+      } catch (e) { showToast(e.message, true); }
+      b.disabled = false;
+    };
   }
 
   // ---- Feuillard: entering movements and production -------------------------------

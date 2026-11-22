@@ -71,4 +71,17 @@ function production(b, now) {
   return out;
 }
 
-module.exports = { id, POSTES, BRIQUES, RETOUR_TYPES, CAUSE_TYPES, Bad, entree, sortie, retour, retourFournisseur, production };
+function coil(b, now) {
+  const m = (v, label) => { const n = Number(v); if (v === '' || v == null || !Number.isFinite(n) || n <= 0) fail(`${label} : nombre strictement positif requis.`); if (n > 100000) fail(`${label} : valeur trop grande.`); return Math.round(n * 1000) / 1000; };
+  const obs = b.observation == null ? '' : String(b.observation).trim();
+  if (obs.length > 500) fail('Observation trop longue (500 caractères maximum).');
+  return { date: date(b.date, now), poids: m(b.poids, 'Poids'), epaisseur: m(b.epaisseur, 'Épaisseur'), largeur: m(b.largeur, 'Largeur'), fissure: oneOf(b.fissure, ['Oui', 'Non'], 'Fissure'), couleur: oneOf(b.couleur, ['Bon', 'Mauvais'], 'Couleur'), observation: obs };
+}
+function decision(b) {
+  const t = b.observation == null ? '' : String(b.observation).trim();
+  if (!t) fail('Écrivez la décision.');
+  if (t.length > 1000) fail('Décision trop longue (1000 caractères maximum).');
+  return t;
+}
+
+module.exports = { coil, decision, id, POSTES, BRIQUES, RETOUR_TYPES, CAUSE_TYPES, Bad, entree, sortie, retour, retourFournisseur, production };
