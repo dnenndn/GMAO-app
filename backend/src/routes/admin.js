@@ -3,6 +3,7 @@ const { sql, getPool } = require('../db');
 const { getAppPool } = require('../appDb');
 const { requireAuth, forgetActive } = require('../middleware/auth');
 const { requireFeature, isOwner } = require('../features');
+const { getFeuillardPool } = require('../feuillardDb');
 const { createDesktopShadow, deleteDesktopShadow } = require('../appUsers');
 
 // Administration of the app's own users (GMAO_APP.app_user).
@@ -122,6 +123,47 @@ router.post('/users/:id/reset-password', async (req, res) => {
     if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Utilisateur introuvable.' });
     res.json({ ok: true });
   } catch (err) { fail(res, err, 'reset password'); }
+});
+
+// Link an app user to a user of the strapping desktop application (its id is recorded on stock movements).
+//   GET /feuillard-users            users of the strapping application
+//   GET /users/:id/feuillard-user   current link (explicit or found by name)
+//   PUT /users/:id/feuillard-user   { id_feuillard_user: number | null }
+router.get('/feuillard-users', async (_req, res) => {
+  try {
+    const pool = await getFeuillardPool();
+    const r = await pool.request().query('select id, nom, statut from utilisateur order by nom');
+    res.json(r.recordset.map((u) => ({ id: u.id, nom: (u.nom || '').trim(), statut: (u.statut || '').trim() })));
+  } catch (err) { fail(res, err, 'feuillard users'); }
+});
+
+router.get('/users/:id/feuillard-user', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Utilisateur invalide.' });
+  try {
+    const app = await getAppPool();
+    const l = (await app.request().input('i', sql.Int, id).query('select id_feuillard_user from app_feuillard_user where desktop_id = @i')).recordset[0];
+    res.json({ id_feuillard_user: l ? l.id_feuillard_user : null });
+  } catch (err) { res.json({ id_feuillard_user: null }); }
+});
+
+router.put('/users/:id/feuillard-user', async (req, res) => {
+  const id = Number(req.params.id);
+  const link = (req.body || {}).id_feuillard_user;
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Utilisateur invalide.' });
+  if (link !== null && (!Number.isInteger(link) || link <= 0)) return res.status(400).json({ error: 'Utilisateur feuillard invalide.' });
+  try {
+    const app = await getAppPool();
+    if (!(await app.request().input('i', sql.Int, id).query('select 1 as x from app_user where desktop_id = @i')).recordset.length) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+    if (link === null) { await app.request().input('i', sql.Int, id).query('delete from app_feuillard_user where desktop_id = @i'); return res.json({ ok: true }); }
+    const pool = await getFeuillardPool();
+    if (!(await pool.request().input('f', sql.Int, link).query('select 1 as x from utilisateur where id = @f')).recordset.length) return res.status(400).json({ error: 'Utilisateur feuillard introuvable.' });
+    await app.request().input('i', sql.Int, id).input('f', sql.Int, link).query(`
+      merge app_feuillard_user as t using (select @i as desktop_id) as s on t.desktop_id = s.desktop_id
+      when matched then update set id_feuillard_user = @f
+      when not matched then insert (desktop_id, id_feuillard_user) values (@i, @f);`);
+    res.json({ ok: true });
+  } catch (err) { fail(res, err, 'link feuillard user'); }
 });
 
 module.exports = router;

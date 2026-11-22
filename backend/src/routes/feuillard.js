@@ -11,7 +11,7 @@ const S = require('../feuillardStats');
 //   GET /stats/arrets?from&to&unite&ligne       machine stoppages
 //   GET /stats/causes?from&to&unite&type        waste causes (Ishikawa) ranked by frequency
 const router = express.Router();
-router.use(requireAuth, requireFeature('feuillard.stats'));
+const stats = [requireAuth, requireFeature('feuillard.stats')];
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const fail = (res, err, what) => { console.error(`feuillard ${what} error:`, err); res.status(500).json({ error: 'Erreur serveur (base feuillard inaccessible ?).' }); };
@@ -26,7 +26,7 @@ function period(req, res) {
 }
 const rq = async (P) => { const pool = await getFeuillardPool(); return pool.request().input('d1', sql.Date, P.from).input('d2', sql.Date, P.to); };
 
-router.get('/stats/options', async (_req, res) => {
+router.get('/stats/options', stats, async (_req, res) => {
   try {
     const pool = await getFeuillardPool();
     const q = async (t) => (await pool.request().query(`select nom from ${t} order by nom`)).recordset.map((x) => String(x.nom).trim());
@@ -35,7 +35,7 @@ router.get('/stats/options', async (_req, res) => {
   } catch (err) { fail(res, err, 'options'); }
 });
 
-router.get('/stats/production', async (req, res) => {
+router.get('/stats/production', stats, async (req, res) => {
   const P = period(req, res); if (!P) return;
   const poste = txt(req.query.poste), unite = txt(req.query.unite);
   try {
@@ -64,7 +64,7 @@ router.get('/stats/production', async (req, res) => {
   } catch (err) { fail(res, err, 'production'); }
 });
 
-router.get('/stats/dechet', async (req, res) => {
+router.get('/stats/dechet', stats, async (req, res) => {
   const P = period(req, res); if (!P) return;
   const unite = txt(req.query.unite), chef = txt(req.query.chef);
   try {
@@ -83,7 +83,7 @@ router.get('/stats/dechet', async (req, res) => {
   } catch (err) { fail(res, err, 'dechet'); }
 });
 
-router.get('/stats/arrets', async (req, res) => {
+router.get('/stats/arrets', stats, async (req, res) => {
   const P = period(req, res); if (!P) return;
   try {
     const r = (await (await rq(P)).input('u', sql.VarChar, txt(req.query.unite)).input('l', sql.VarChar, txt(req.query.ligne)).query(
@@ -97,7 +97,7 @@ router.get('/stats/arrets', async (req, res) => {
   } catch (err) { fail(res, err, 'arrets'); }
 });
 
-router.get('/stats/causes', async (req, res) => {
+router.get('/stats/causes', stats, async (req, res) => {
   const P = period(req, res); if (!P) return;
   try {
     const r = (await (await rq(P)).input('u', sql.VarChar, txt(req.query.unite)).input('t', sql.VarChar, txt(req.query.type)).query(

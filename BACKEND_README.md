@@ -145,6 +145,7 @@ The backend connects to it with `src/feuillardDb.js` (same login as GMAO unless 
 access to that database). Its structure is never changed: anything the app needs to add goes into `GMAO_APP`.
 Step 1 (read only): *Feuillard* tab with Rendement, Déchet, Arrêts and Causes (`/api/feuillard/stats/*`), right `feuillard.stats`
 (default: Administrateur, Responsable Méthode, DGA; marwen can grant it to others in 🔐). New roles available when creating users: Chef d'équipe, Qualité.
+Step 2 (writing): `sql/12_feuillard_app.sql` (GMAO_APP only: link app user ↔ strapping user, log of who entered what). Receipts, issues, returns, supplier returns (right `feuillard.write`: Administrateur, Responsable Magasin, Magasinier) and production with waste causes and machine stoppages (right `feuillard.production`: Administrateur, Responsable Méthode, Chef d'équipe). Each movement and its stock update are one transaction; only rows are added to the tables the desktop writes. The strapping user recorded on a movement is the one linked in Utilisateurs > 🧱, else the one with the same name as the login.
 
 ## Permissions per user
 

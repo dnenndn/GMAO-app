@@ -929,6 +929,7 @@
     }
     // Two entries cover the business objects: Magasin (BSM / BRM / DA, plus
     // Réception for managers) and Production (rapports + ordres de fabrication).
+    const FEU = ['feuillard.stats', 'feuillard.write', 'feuillard.production'];
     const MAG = ['bsm.create', 'brm.create', 'da.create', 'da.review', 'reception.use', 'stock.insight', 'achats.view', 'bsm.validate', 'brm.validate'];
     const tabs = [
       tabButton('accueil', '🏠', 'Accueil'),
@@ -938,7 +939,7 @@
       can('maintenance.view') || can('di.create') ? tabButton('maintenance', '🔧', 'Maintenance') : '',
       can('atelier.view') ? tabButton('atelier', '🏭', 'Atelier') : '',
       can('parc.view') ? tabButton('parc', '🚜', 'Parc') : '',
-      can('feuillard.stats') ? tabButton('feuillard', '🧱', 'Feuillard') : ''
+      FEU.some(can) ? tabButton('feuillard', '🧱', 'Feuillard') : ''
     ].filter(Boolean);
     if (isAdmin()) {
       tabs.push(tabButton('users', '👤', 'Utilisateurs'));
@@ -1003,7 +1004,7 @@
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
     if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cpt: renderMaintCompteurs, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
-    if (state.tab === 'feuillard') return renderHub('feuillard', { rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
+    if (state.tab === 'feuillard') return renderHub('feuillard', { mvt: renderFeuMvt, prod: renderFeuProd, rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
   }
@@ -1019,7 +1020,7 @@
     maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
-    feuillard: [['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
+    feuillard: [['mvt', 'Mouvements', 'feuillard.write'], ['prod', 'Production', 'feuillard.production'], ['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
     parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cpt', 'Compteurs', 'maintenance.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
@@ -1585,7 +1586,7 @@
   }
   function tabAllowed(tab) {
     const need = { stock: ['stock.view'], bsm: ['bsm.create'], brm: ['brm.create'], production: ['production.view'], rapports: ['production.view'],
-      maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], feuillard: ['feuillard.stats'], users: ['users.admin'], reception: ['reception.use'],
+      maintenance: ['maintenance.view', 'di.create'], atelier: ['atelier.view'], parc: ['parc.view'], feuillard: ['feuillard.stats', 'feuillard.write', 'feuillard.production'], users: ['users.admin'], reception: ['reception.use'],
       da: ['da.create', 'da.review'], achats: ['achats.view'], analyse: ['stock.insight', 'stock.valuation'] }[tab];
     return !need || need.some(can);
   }
@@ -2315,6 +2316,160 @@
     }; });
   }
 
+
+
+  // ---- Feuillard: entering movements and production -------------------------------
+  async function feuRefs(fresh) {
+    if (!state.feuRef || fresh) state.feuRef = await api('/feuillard/refs', { fresh: !!fresh });
+    return state.feuRef;
+  }
+  const numVal = (el) => (el && el.value !== '' ? Number(String(el.value).replace(',', '.')) : NaN);
+  const opts = (list, label, sel) => `<option value="">${label}</option>` + list.map((x) => `<option value="${x.id}" ${String(sel) === String(x.id) ? 'selected' : ''}>${escapeHtml(x.nom || x.designation)}</option>`).join('');
+
+  const FEU_KINDS = [
+    ['entree', 'Entrée', '/feuillard/entree', 'Entrée de feuillard'],
+    ['sortie', 'Sortie', '/feuillard/sortie', 'Sortie de feuillard'],
+    ['retour', 'Retour', '/feuillard/retour', 'Retour de feuillard'],
+    ['retour-fournisseur', 'Retour fourn.', '/feuillard/retour-fournisseur', 'Retour fournisseur']
+  ];
+  async function renderFeuMvt(root) {
+    root.innerHTML = '<div class="card"><div class="empty">Chargement…</div></div>';
+    let R;
+    try { R = await feuRefs(true); } catch (e) { root.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; return; }
+    const kind = state.feuKind || 'entree';
+    const needChef = kind === 'sortie' || kind === 'retour';
+    const needFour = kind === 'entree' || kind === 'retour-fournisseur';
+    root.innerHTML = `
+      <div class="card" style="padding:10px"><div class="segmented" style="margin-top:0">${FEU_KINDS.map((k) => `<button data-k="${k[0]}" class="${k[0] === kind ? 'selected' : ''}">${k[1]}</button>`).join('')}</div></div>
+      <div class="card">
+        <label>Date</label><input type="date" id="fm-date" value="${isoDate()}" max="${isoDate()}" />
+        <label>Article</label><select id="fm-art">${R.articles.map((a) => `<option value="${a.id}">${escapeHtml(a.designation)} — stock ${fmtN(a.stock)}</option>`).join('')}</select>
+        ${needFour ? `<label>Fournisseur</label><select id="fm-four">${opts(R.fournisseurs, 'Choisir…')}</select>` : ''}
+        ${needChef ? `<label>Poste</label><select id="fm-poste">${R.postes.map((p) => `<option>${p}</option>`).join('')}</select>
+          <label>Chef d'équipe</label><select id="fm-chef">${opts(R.chefs, 'Choisir…')}</select>
+          <label>Unité d'emballage</label><select id="fm-unite">${opts(R.unites, 'Choisir…')}</select>` : ''}
+        ${kind === 'retour' ? `<label>État des bobines</label><select id="fm-type">${R.retour_types.map((t) => `<option>${t}</option>`).join('')}</select><div class="muted">Seules les bobines « Bon état » reviennent en stock.</div>` : ''}
+        <label>Quantité (bobines)</label><input id="fm-qt" inputmode="decimal" autocomplete="off" />
+        <button class="primary" id="fm-save" style="margin-top:10px">Enregistrer</button>
+        <div class="error" id="fm-err"></div>
+      </div>
+      <div class="card"><h3 style="margin-top:0">Derniers mouvements</h3><div id="fm-list"><div class="empty">Chargement…</div></div></div>`;
+    root.querySelectorAll('[data-k]').forEach((b) => { b.onclick = () => { state.feuKind = b.dataset.k; renderFeuMvt(root); }; });
+    const loadList = async () => {
+      const box = root.querySelector('#fm-list'); if (!box) return;
+      try {
+        const d = await api(`/feuillard/mouvements?kind=${kind}`, { fresh: true });
+        box.innerHTML = d.rows.length ? d.rows.map((x) => `<div class="article-row"><div style="min-width:0;flex:1"><div class="name">${escapeHtml(x.article)}</div><div class="code">${frDate(String(x.date).slice(0, 10))}${x.detail ? ' · ' + escapeHtml(x.detail) : ''}</div></div><div style="padding-left:8px"><strong>${fmtN(x.qt)}</strong></div></div>`).join('') : '<div class="empty">Aucun mouvement</div>';
+      } catch (e) { box.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+    };
+    loadList();
+    root.querySelector('#fm-save').onclick = async () => {
+      const err = root.querySelector('#fm-err'); err.textContent = '';
+      const qt = numVal(root.querySelector('#fm-qt'));
+      const body = { date: root.querySelector('#fm-date').value, id_article: Number(root.querySelector('#fm-art').value), qt };
+      if (!(qt > 0)) { err.textContent = 'Quantité : nombre strictement positif.'; return; }
+      if (needFour) { body.id_fournisseur = Number(root.querySelector('#fm-four').value); if (!body.id_fournisseur) { err.textContent = 'Choisissez le fournisseur.'; return; } }
+      if (needChef) {
+        body.poste = root.querySelector('#fm-poste').value; body.id_chef = Number(root.querySelector('#fm-chef').value); body.id_unite = Number(root.querySelector('#fm-unite').value);
+        if (!body.id_chef || !body.id_unite) { err.textContent = "Choisissez le chef d'équipe et l'unité."; return; }
+      }
+      if (kind === 'retour') body.type = root.querySelector('#fm-type').value;
+      const K = FEU_KINDS.find((k) => k[0] === kind);
+      const art = R.articles.find((a) => a.id === body.id_article);
+      const btn = root.querySelector('#fm-save'); btn.disabled = true;
+      try {
+        const r = await postOrQueue({ path: K[2], kind: 'feuillard', label: `${K[3]} (${qt} × ${art ? art.designation : ''})`, body });
+        if (r.out) showToast(r.out.stock != null ? `✓ Enregistré · stock ${fmtN(r.out.stock)}` : '✓ Enregistré');
+        state.feuRef = null; root.querySelector('#fm-qt').value = '';
+        renderFeuMvt(root);
+      } catch (e) { err.textContent = e.message; btn.disabled = false; }
+    };
+  }
+
+  const CAUSE_GROUPS = [['main_ouevre', 'Main d\'œuvre', 'Main_Ouevre'], ['machine', 'Machine', 'Machine'], ['matiere', 'Matière', 'Matiere'], ['methode', 'Méthode', 'Methode'], ['milieu', 'Milieu', 'Milieu']];
+  async function renderFeuProd(root) {
+    root.innerHTML = '<div class="card"><div class="empty">Chargement…</div></div>';
+    let R;
+    try { R = await feuRefs(true); } catch (e) { root.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`; return; }
+    const arrets = [];
+    root.innerHTML = `
+      <div class="card">
+        <label>Date</label><input type="date" id="fp-date" value="${isoDate()}" max="${isoDate()}" />
+        <label>Poste</label><select id="fp-poste">${R.postes.map((p) => `<option>${p}</option>`).join('')}</select>
+        <label>Chef d'équipe</label><select id="fp-chef">${opts(R.chefs, 'Choisir…')}</select>
+        <label>Unité d'emballage</label><select id="fp-unite">${opts(R.unites, 'Choisir…')}</select>
+        <label>Brique</label><select id="fp-brique">${R.briques.map((b) => `<option>${escapeHtml(b)}</option>`).join('')}</select>
+        <div style="display:flex;gap:8px"><label style="flex:1">Wagons<input id="fp-wag" inputmode="decimal" /></label><label style="flex:1">Palettes<input id="fp-pal" inputmode="decimal" /></label></div>
+        <div id="fp-h" style="display:none;gap:8px"><label style="flex:1">Wagons (2e brique)<input id="fp-wagh" inputmode="decimal" /></label><label style="flex:1">Palettes (2e brique)<input id="fp-palh" inputmode="decimal" /></label></div>
+        <label>Article (bobines)</label><select id="fp-art">${opts(R.articles, 'Choisir…')}</select>
+        <label>Bobines utilisées</label><input id="fp-bo" inputmode="decimal" />
+        <label>2e article (si deux types de bobines)</label><select id="fp-art2">${opts(R.articles, 'Aucun')}</select>
+        <div id="fp-2" style="display:none"><label>Bobines utilisées (2e article)</label><input id="fp-bo2" inputmode="decimal" /></div>
+      </div>
+      <div class="card"><h3 style="margin-top:0">Causes de déchet (Ishikawa)</h3>
+        ${CAUSE_GROUPS.map(([k, label, type]) => { const list = R.causes.filter((c) => c.type.toLowerCase() === type.toLowerCase()); return list.length ? `<details style="margin-bottom:6px"><summary><strong>${label}</strong> <span class="muted" data-n="${k}"></span></summary>${list.map((c) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;padding:4px 0"><input type="checkbox" class="fp-cause" data-k="${k}" value="${escapeHtml(c.nom)}" style="width:auto" /> ${escapeHtml(c.nom)}</label>`).join('')}</details>` : ''; }).join('')}
+      </div>
+      <div class="card"><h3 style="margin-top:0">Arrêts de machine</h3><div id="fp-arrets" class="muted">Aucun arrêt</div>
+        <div id="fp-add" style="margin-top:8px"></div></div>
+      <div class="card"><button class="primary" id="fp-save">Enregistrer la production</button><div class="error" id="fp-err"></div></div>`;
+    const $ = (id) => root.querySelector('#' + id);
+    const mixed = () => $('fp-brique').value.includes('&');
+    const sync = () => { $('fp-h').style.display = mixed() ? 'flex' : 'none'; $('fp-2').style.display = $('fp-art2').value ? 'block' : 'none'; };
+    $('fp-brique').onchange = sync; $('fp-art2').onchange = sync; sync();
+    root.querySelectorAll('.fp-cause').forEach((c) => { c.onchange = () => { const n = root.querySelectorAll(`.fp-cause[data-k="${c.dataset.k}"]:checked`).length; root.querySelector(`[data-n="${c.dataset.k}"]`).textContent = n ? `(${n})` : ''; }; });
+    const machineCauses = R.causes.filter((c) => c.type.toLowerCase() === 'machine');
+    const drawArrets = () => {
+      const unite = Number($('fp-unite').value);
+      const ms = R.machines.filter((m) => m.id_unite === unite);
+      $('fp-arrets').innerHTML = arrets.length ? arrets.map((a, i) => `<div class="article-row"><div style="min-width:0;flex:1"><div class="name">${escapeHtml(a.machine)} · ${escapeHtml(a.cause)}</div><div class="code">${a.frequence} fois · ${a.duree}</div></div><button class="ghost" data-del="${i}">✕</button></div>`).join('') : 'Aucun arrêt';
+      $('fp-arrets').querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { arrets.splice(Number(b.dataset.del), 1); drawArrets(); }; });
+      $('fp-add').innerHTML = unite && ms.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap"><select id="fa-m" style="flex:1 1 45%">${ms.map((m) => `<option value="${m.id}">${escapeHtml(m.nom)} (${escapeHtml(m.ligne)})</option>`).join('')}</select>
+        <select id="fa-c" style="flex:1 1 45%">${machineCauses.map((c) => `<option>${escapeHtml(c.nom)}</option>`).join('')}</select>
+        <input id="fa-f" inputmode="numeric" placeholder="Fois" style="flex:1 1 20%" /><input id="fa-d" type="time" value="00:30" style="flex:1 1 30%" /><button class="ghost" id="fa-go" style="flex:1 1 30%">+ Ajouter</button></div>` : '<div class="muted">Choisissez l\'unité pour saisir les arrêts de ses machines.</div>';
+      const go = $('fa-go');
+      if (go) go.onclick = () => {
+        const f = numVal($('fa-f')); const d = $('fa-d').value;
+        if (!(f > 0) || !d) { showToast('Indiquez le nombre de fois et la durée', true); return; }
+        const m = ms.find((x) => String(x.id) === $('fa-m').value);
+        arrets.push({ id_encercleuse: m.id, machine: m.nom, cause: $('fa-c').value, frequence: f, duree: d.length === 5 ? d + ':00' : d });
+        drawArrets();
+      };
+    };
+    $('fp-unite').onchange = () => { arrets.length = 0; drawArrets(); }; drawArrets();
+    $('fp-save').onclick = async () => {
+      const err = $('fp-err'); err.textContent = '';
+      const body = { date: $('fp-date').value, poste: $('fp-poste').value, id_chef: Number($('fp-chef').value), id_unite: Number($('fp-unite').value), brique: $('fp-brique').value,
+        id_article: Number($('fp-art').value), nbre_wagon: numVal($('fp-wag')), nbre_palette: numVal($('fp-pal')), nbre_bobine: numVal($('fp-bo')) };
+      if (!body.id_chef || !body.id_unite || !body.id_article) { err.textContent = "Choisissez le chef d'équipe, l'unité et l'article."; return; }
+      if ([body.nbre_wagon, body.nbre_palette, body.nbre_bobine].some((x) => Number.isNaN(x))) { err.textContent = 'Wagons, palettes et bobines sont obligatoires.'; return; }
+      if (mixed()) { body.wagon_h = numVal($('fp-wagh')); body.palette_h = numVal($('fp-palh')); if (Number.isNaN(body.wagon_h) || Number.isNaN(body.palette_h)) { err.textContent = 'Indiquez aussi les wagons et palettes de la 2e brique.'; return; } }
+      if ($('fp-art2').value) { body.id2_article = Number($('fp-art2').value); body.nbre_bobine_2 = numVal($('fp-bo2')); if (Number.isNaN(body.nbre_bobine_2)) { err.textContent = 'Indiquez les bobines du 2e article.'; return; } }
+      body.causes = {}; root.querySelectorAll('.fp-cause:checked').forEach((c) => { (body.causes[c.dataset.k] = body.causes[c.dataset.k] || []).push(c.value); });
+      body.arrets = arrets.map((a) => ({ id_encercleuse: a.id_encercleuse, cause: a.cause, frequence: a.frequence, duree: a.duree }));
+      const btn = $('fp-save'); btn.disabled = true;
+      try {
+        const r = await postOrQueue({ path: '/feuillard/production', kind: 'feuillard', label: `Production ${body.brique} (${body.nbre_wagon} wagons)`, body });
+        if (r.out) showToast('✓ Production enregistrée');
+        renderFeuProd(root);
+      } catch (e) { err.textContent = e.message; btn.disabled = false; }
+    };
+  }
+
+  // Owner: link an app user to a user of the strapping application (recorded on stock movements)
+  async function openFeuLinkSheet(id, login) {
+    const { sheet, close } = openSheet('<div class="empty">Chargement…</div>');
+    try {
+      const [list, cur] = await Promise.all([api('/admin/feuillard-users', { fresh: true }), api(`/admin/users/${id}/feuillard-user`, { fresh: true })]);
+      sheet.innerHTML = `<h2>Utilisateur feuillard</h2><p class="muted">${escapeHtml(login)} : utilisateur du logiciel feuillard dont l'identifiant est enregistré sur ses mouvements de stock. Sans lien, l'application cherche le même nom.</p>
+        <select id="fl-sel"><option value="">Aucun lien (même nom)</option>${list.map((u) => `<option value="${u.id}" ${cur.id_feuillard_user === u.id ? 'selected' : ''}>${escapeHtml(u.nom)} · ${escapeHtml(u.statut)}</option>`).join('')}</select>
+        <button class="primary" id="fl-ok" style="margin-top:10px">Enregistrer</button><div class="error" id="fl-err"></div>`;
+      sheet.querySelector('#fl-ok').onclick = async () => {
+        const v = sheet.querySelector('#fl-sel').value;
+        try { await api(`/admin/users/${id}/feuillard-user`, { method: 'PUT', body: { id_feuillard_user: v ? Number(v) : null } }); close(); showToast('✓ Lien enregistré'); }
+        catch (e) { sheet.querySelector('#fl-err').textContent = e.message; }
+      };
+    } catch (e) { sheet.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`; }
+  }
 
   // ---- Feuillard (strapping): production statistics ----------------------------
   const fmtN = (n, d = 2) => (n == null ? '–' : Number(n).toLocaleString('fr-FR', { maximumFractionDigits: d }));
@@ -3728,13 +3883,14 @@
             <span class="muted">${escapeHtml(u.fonction)}${u.deleted ? ' · désactivé' : (u.has_password ? '' : ' · mot de passe à définir')}</span>
           </div>
           <span style="display:flex;gap:6px">
-            ${state.canEditPerms ? `<button class="ghost" data-action="perms" data-id="${u.id}" data-login="${escapeHtml(u.login)}" title="Droits d'accès">🔐</button>` : ''}
+            ${state.canEditPerms ? `<button class="ghost" data-action="perms" data-id="${u.id}" data-login="${escapeHtml(u.login)}" title="Droits d'accès">🔐</button><button class="ghost" data-action="feu" data-id="${u.id}" data-login="${escapeHtml(u.login)}" title="Utilisateur feuillard">🧱</button>` : ''}
             <button class="ghost" data-action="reset" data-id="${u.id}" data-login="${escapeHtml(u.login)}" title="Réinitialiser le mot de passe">🔑</button>
             <button class="ghost" data-action="toggle" data-id="${u.id}" data-deleted="${u.deleted}">${u.deleted ? '✓' : '✕'}</button>
           </span>
         </div>
       `).join('');
       box.querySelectorAll('[data-action=perms]').forEach((btn) => { btn.onclick = () => openPermsSheet(Number(btn.dataset.id), btn.dataset.login); });
+      box.querySelectorAll('[data-action=feu]').forEach((btn) => { btn.onclick = () => openFeuLinkSheet(Number(btn.dataset.id), btn.dataset.login); });
       box.querySelectorAll('[data-action=reset]').forEach((btn) => {
         btn.onclick = () => resetUserPassword(btn.dataset.id, btn.dataset.login);
       });
