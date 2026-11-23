@@ -1000,10 +1000,10 @@
     if (state.tab === 'brm') return renderHub('brm', { new: renderBrm, pending: (r) => renderPending(r, 'brm'), history: (r) => renderHistorique(r, 'brm') });
     if (state.tab === 'da') return renderHub('da', { review: renderDaReview, new: renderDa, mine: renderDaMine });
     if (state.tab === 'atelier') return renderHub('atelier', { open: (r) => renderAtelierList(r, 'open'), solde: (r) => renderAtelierList(r, 'solde') });
-    if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda });
+    if (state.tab === 'maintenance') return renderHub('maintenance', { di: renderMaintDi, new: renderMaintNew, ot: renderMaintOt, agenda: renderMaintAgenda, cpt: (r) => renderMaintCompteurs(r, 'autres') });
     if (state.tab === 'achats') return renderHub('achats', { synth: renderAchatsSynth, cmd: renderAchatsCmd, bl: renderAchatsBl, fac: renderAchatsFac });
     if (state.tab === 'analyse') return renderHub('analyse', { min: renderStockMin, dormant: renderStockDormant, valeur: renderStockValeur });
-    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cpt: renderMaintCompteurs, cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
+    if (state.tab === 'parc') return renderHub('parc', { conso: renderParcConso, charge: renderParcCharge, cpt: (r) => renderMaintCompteurs(r, 'engins'), cuve: renderParcCuve, bons: renderParcBons, alertes: renderParcAlertes, papiers: renderParcPapiers });
     if (state.tab === 'feuillard') return renderHub('feuillard', { stk: renderFeuStock, mvt: renderFeuMvt, prod: renderFeuProd, qual: renderFeuQual, rend: renderFeuRend, dech: renderFeuDechet, arr: renderFeuArrets, cau: renderFeuCauses });
     if (state.tab === 'reception') return renderReception();
     if (state.tab === 'users') return renderUsers();
@@ -1017,11 +1017,11 @@
     brm: [['new', 'Nouveau', 'brm.create'], ['pending', 'À valider', 'brm.validate'], ['history', 'Historique', 'brm.validate']],
     da: [['review', 'À traiter', 'da.review'], ['new', 'Nouvelle', 'da.create'], ['mine', 'Mes demandes', 'da.create']],
     atelier: [['open', 'OF à solder', null], ['solde', 'Soldés', null]],
-    maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view']],
+    maintenance: [['di', 'Demandes', 'maintenance.view'], ['new', 'Nouvelle DI', 'di.create'], ['ot', 'OT', 'maintenance.view'], ['agenda', 'Agenda', 'maintenance.view'], ['cpt', 'Compteurs', 'maintenance.view']],
     achats: [['synth', 'Synthèse', null], ['cmd', 'Commandes', null], ['bl', 'BL', null], ['fac', 'Factures', null]],
     analyse: [['min', 'Sous minimum', 'stock.insight'], ['dormant', 'Dormant', 'stock.insight'], ['valeur', 'Valeur', 'stock.valuation']],
     feuillard: [['stk', 'Stock', null], ['mvt', 'Mouvements', 'feuillard.write'], ['prod', 'Production', 'feuillard.production'], ['qual', 'Qualité', 'feuillard.qualite'], ['rend', 'Rendement', 'feuillard.stats'], ['dech', 'Déchet', 'feuillard.stats'], ['arr', 'Arrêts', 'feuillard.stats'], ['cau', 'Causes', 'feuillard.stats']],
-    parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cpt', 'Compteurs', 'maintenance.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
+    parc: [['conso', 'Consommation', null], ['charge', 'Charge', 'money.view'], ['cpt', 'Compteurs engins', 'maintenance.view'], ['cuve', 'Cuve', 'parc.cuve'], ['bons', 'Bons', null], ['alertes', 'Alertes', null], ['papiers', 'Papiers', null]]
   };
 
   function renderHub(tab, renderers) {
@@ -1309,12 +1309,12 @@
   }
 
   // Preventive plans driven by counters: what is left before each one fires.
-  async function renderMaintCompteurs(root) {
-    root.innerHTML = '<div class="card"><div class="muted">Plans préventifs au compteur (heures / km) : reste avant déclenchement. Les plus avancés en premier.</div></div><div class="card" id="cp-body"><div class="empty">Chargement…</div></div>';
+  async function renderMaintCompteurs(root, scope) {
+    root.innerHTML = `<div class="card"><div class="muted">Plans préventifs au compteur (heures / km) ${scope === 'engins' ? 'des engins du parc' : 'des autres équipements (hors engins du parc)'} : reste avant déclenchement. Les plus avancés en premier.</div></div>`+'<div class="card" id="cp-body"><div class="empty">Chargement…</div></div>';
     const box = root.querySelector('#cp-body');
     try {
-      const d = await api('/maintenance/compteurs', { fresh: true });
-      if (!d.compteurs.length) { box.innerHTML = '<div class="empty">Aucun plan préventif au compteur</div>'; return; }
+      const d = await api('/maintenance/compteurs?scope=' + (scope || 'autres'), { fresh: true });
+      if (!d.compteurs.length) { box.innerHTML = '<div class="empty">Aucun plan préventif au compteur' + (scope === 'engins' ? ' sur les engins' : ' sur les autres équipements') + '</div>'; return; }
       const row = (c) => { const pct = c.pct == null ? 0 : Math.min(100, c.pct);
         return `<div class="article-row" ${c.id_engin ? `data-e="${c.id_engin}" style="cursor:pointer;align-items:flex-start"` : 'style="align-items:flex-start"'}>
           <div style="min-width:0;flex:1"><div class="name">${escapeHtml(c.equipement)}${c.matricule ? ' · ' + escapeHtml(c.matricule) : ''}</div>

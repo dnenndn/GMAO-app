@@ -455,11 +455,13 @@ router.post('/ot/:id/note', requireFeature('ot.update'), async (req, res) => {
   }
 });
 
-// Preventive plans driven by counters (hours / km), whole fleet, closest to their threshold first.
+// Preventive plans driven by counters (hours / km), closest to their threshold first.
+// ?scope=engins -> only equipment that is a vehicle of the Parc (engins.liaison); ?scope=autres -> all the other equipment.
 router.get('/compteurs', async (req, res) => {
   try {
     const pool = await getPool();
-    const rows = (await loadCompteurs(pool)).sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1) || a.restant - b.restant);
+    const scope = req.query.scope;
+    const rows = (await loadCompteurs(pool)).filter((x) => scope === 'engins' ? x.id_engin != null : scope === 'autres' ? x.id_engin == null : true).sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1) || a.restant - b.restant);
     res.json({ compteurs: rows.slice(0, 300), depasses: rows.filter((x) => x.etat === 'depasse').length, proches: rows.filter((x) => x.etat === 'proche').length });
   } catch (err) {
     console.error('maintenance compteurs error:', err);
